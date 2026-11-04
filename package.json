@@ -1,0 +1,21 @@
+{
+	"name": "fold-obsidian",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "An Obsidian plugin that keeps a one-way copy of a Fold memory space's notes in a vault.",
+	"scripts": {
+		"typecheck": "tsc --noEmit --checkers 1",
+		"test": "vitest run",
+		"build": "node esbuild.config.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "24.10.1",
+		"esbuild": "0.28.2",
+		"obsidian": "1.14.4",
+		"typescript": "7.0.2",
+		"vitest": "5.0.5"
+	},
+	"license": "MIT",
+	"packageManager": "pnpm@10.34.7"
+}
