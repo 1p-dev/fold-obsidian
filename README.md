@@ -13,12 +13,13 @@ It copies a space's notes, the `inbox/` and `managed/` folders, and nothing else
 
 ## Install
 
-Fold memory is not in Obsidian's community directory yet. To install it by hand:
+1. Make a new vault for the space. One vault holds one space.
+2. In Obsidian, open Settings, then Community plugins, and turn on community plugins.
+3. Select Browse, search for "Fold memory", then install and enable it.
 
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/1p-dev/fold-obsidian/releases/latest).
-2. Make a new vault for the space. One vault holds one space.
-3. In the vault's folder, make the folder `.obsidian/plugins/fold-memory/` and put both files in it. On macOS and Linux, `.obsidian` is hidden: show hidden files to see it.
-4. In Obsidian, open Settings, then Community plugins. Turn on community plugins, then enable Fold memory.
+Fold memory is also listed in [Obsidian's community directory](https://community.obsidian.md/plugins/fold-memory).
+
+To install it by hand instead, put `main.js` and `manifest.json` from the [latest release](https://github.com/1p-dev/fold-obsidian/releases/latest) in the vault's `.obsidian/plugins/fold-memory/` folder, then enable it under Community plugins. On macOS and Linux, `.obsidian` is hidden: show hidden files to see it.
 
 ## Connect a space
 
