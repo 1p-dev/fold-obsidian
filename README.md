@@ -2,34 +2,42 @@
 
 An Obsidian plugin that keeps a read-only copy of a Fold memory space's notes in your vault, so you can read, search and browse what your agents have learned with Obsidian's graph, backlinks and search.
 
-It copies a space's notes, the `inbox/` and `managed/` folders, and nothing else: never the space's reference documents or its guidance files. It only reads from Fold. An edit you make in the vault does not reach Fold, so to correct a note, add a new one to the space's inbox through an agent or Fold's web app.
+It copies a space's notes, the `inbox/` and `managed/` folders, and nothing else: never the space's reference documents or its guidance files. It only reads from Fold: an edit you make in the vault never reaches it.
 
 ## What you need
 
-- Obsidian 1.11.4 or later. The plugin is built to run on mobile too, but so far it has been tested on desktop only.
-- A 1p account with access to a Fold memory space.
-- A 1p personal access token with the `fold:read` scope. The plugin never writes to Fold, so it needs no more than that.
-- Fold's query address.
+- **Obsidian 1.11.4 or later.** The plugin is built to run on mobile too, but so far it has been tested on desktop only.
+- **A 1p account** with access to a Fold memory space.
+- **A token.** On 1p's token page, make a personal access token with the scope `fold:read`, and copy it. The plugin never writes to Fold, so it needs no more than that.
+- **Fold's query address,** which starts with `https://`. If you don't have it, ask 1p.
 
 ## Install
 
-1. Make a new vault for the space. One vault holds one space.
-2. In Obsidian, open Settings, then Community plugins, and turn on community plugins.
-3. Select Browse, search for "Fold memory", then install and enable it.
+1. Make a new vault for the space, since one vault holds one space.
+2. Open Settings (the gear at the bottom left), then **Community plugins**.
+3. **If you see Exit Restricted mode, select it.** Obsidian keeps community plugins off until you do.
+4. Select **Browse**, search for "Fold memory", then select **Install**, then **Enable**.
 
-Fold memory is also listed in [Obsidian's community directory](https://community.obsidian.md/plugins/fold-memory).
+You can also open [Fold memory in Obsidian's community directory](https://community.obsidian.md/plugins/fold-memory).
 
 To install it by hand instead, put `main.js` and `manifest.json` from the [latest release](https://github.com/1p-dev/fold-obsidian/releases/latest) in the vault's `.obsidian/plugins/fold-memory/` folder, then enable it under Community plugins. On macOS and Linux, `.obsidian` is hidden: show hidden files to see it.
 
 ## Connect a space
 
-1. In Fold memory's settings, enter Fold's query address.
-2. Under Token, create a secret and paste your token into it. Obsidian keeps it in its own secret storage.
-3. Choose a space.
+1. In Settings, select **Fold memory** in the sidebar, under Community plugins.
+2. Paste Fold's query address into **Fold query address**.
+3. Under **Token**, select **Select secret**, then **Add secret...**. Give it an ID such as `fold`, paste your token as the **Secret**, and add it. Obsidian keeps the token in its own secret storage.
+4. Under **Space**, choose the space.
 
-The notes then arrive, and the status bar shows how many the vault holds.
+The notes then arrive, and the status bar at the bottom shows how many the vault holds.
 
 The address, the token's name and the chosen space are kept on this device only, never in the vault. A vault can be synced or shared, so nothing in it ever decides where your token goes or what it reads. On another device, you enter them again.
+
+## Use it
+
+- **Read the notes** in `managed/`, the notes Fold has filed, and `inbox/`, new notes waiting to be filed. Browse them as you would any notes, with search, links, backlinks and the graph view.
+- **Get changes now** with the ribbon's sync button, or "Fold memory: Sync notes now" in the command palette. Otherwise the plugin checks every 5 minutes.
+- **Don't edit the notes.** They open for reading, and an edit stays in this vault: it never reaches Fold. To correct a note, add a new one to the space's inbox through an agent or Fold's web app.
 
 ## What it does
 
