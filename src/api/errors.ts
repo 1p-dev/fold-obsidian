@@ -19,6 +19,8 @@ export function describeError(error: unknown): string {
 			return "Your access to this space, or your sign-in's scope, doesn't allow this.";
 		case "indexing":
 			return "Fold is still indexing this space. Try again when it says Ready.";
+		case "reindexing":
+			return "This space is already being re-indexed. It says Indexing until that is done.";
 		case "changed":
 			return "This file changed after you opened it.";
 		case "access-unavailable":

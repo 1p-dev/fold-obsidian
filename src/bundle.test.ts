@@ -58,7 +58,7 @@ describe("the manifest", () => {
 		expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
 	});
 
-	it("asks for the Obsidian that has secret storage, since there is no plain-text fallback", () => {
-		expect(manifest.minAppVersion).toBe("1.11.4");
+	it("asks for the Obsidian that has declarative settings, the oldest public 1.13, which also has secret storage", () => {
+		expect(manifest.minAppVersion).toBe("1.13.4");
 	});
 });

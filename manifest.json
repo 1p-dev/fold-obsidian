@@ -1,8 +1,8 @@
 {
 	"id": "fold-memory",
 	"name": "Fold memory",
-	"version": "0.1.0",
-	"minAppVersion": "1.11.4",
+	"version": "0.1.1",
+	"minAppVersion": "1.13.4",
 	"description": "Keeps a read-only copy of a Fold memory space's notes in your vault.",
 	"author": "1p",
 	"isDesktopOnly": false

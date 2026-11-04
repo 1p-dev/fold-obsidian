@@ -45,7 +45,8 @@ export interface ApiClientOptions {
 	token: () => Promise<string | null>;
 	/** Called on a 401: answers true when a new token is worth one retry. */
 	refresh: () => Promise<boolean>;
-	fetch?: typeof fetch;
+	/** How to reach Fold: the web app passes the browser's fetch, and the Obsidian plugin one over Obsidian's requestUrl. There is no default, so the plugin's bundle holds no call to fetch, which Obsidian's review flags. */
+	fetch: typeof fetch;
 }
 
 /** A space's id as one path segment, and a file's path as its segments, so `/` stays a separator and nothing else does. */
@@ -71,7 +72,7 @@ export type ApiClient = ReturnType<typeof createApiClient>;
 
 /** Fold's HTTP API (planning/memory-spaces-first/README.md): reads go to the query part, writes to the control part, each with the person's bearer token. */
 export function createApiClient(options: ApiClientOptions) {
-	const fetchImpl = options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+	const fetchImpl = options.fetch;
 
 	/** The response to a call that succeeded; anything else is thrown as a refusal. */
 	async function send(base: string, method: string, path: string, body?: unknown, retried = false): Promise<Response> {
@@ -137,6 +138,8 @@ export function createApiClient(options: ApiClientOptions) {
 		sleep: (id: string) => query<SleepView>("GET", `${space(id)}/sleep`),
 		setSleep: (id: string, settings: SleepSettings) => control<SleepSettings>("PUT", `${space(id)}/sleep`, settings),
 		setSettings: (id: string, settings: Partial<SpaceSettings>) => control<SpaceSettings>("PUT", `${space(id)}/settings`, settings),
+		/** Every file of the space read again, at admin: answers the revision whose job does it, and the space says indexing until it is served. */
+		reindex: (id: string) => control<Revised>("POST", `${space(id)}/reindex`),
 		saveNote: (id: string, body: NewNote) => control<NoteSaved>("POST", `${space(id)}/notes`, body),
 		writeFile: (id: string, path: string, body: WriteFile) => control<Revised>("PUT", `${space(id)}/files/${filePath(path)}`, body),
 		/** `ifRevision` refuses the delete with `changed` when the file changed after that revision (spaces lane, LOG.md 15:45). `purge`, at admin, takes both versions at once, with no way back. */

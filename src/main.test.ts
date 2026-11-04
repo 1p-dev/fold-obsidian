@@ -11,7 +11,7 @@ const stub = vi.hoisted(() => ({
 		throw new Error("no http yet");
 	}) as unknown,
 	store: null as unknown,
-	displays: 0,
+	updates: 0,
 	bar: "",
 }));
 
@@ -55,8 +55,8 @@ vi.mock("obsidian", () => {
 });
 vi.mock("./settings", () => ({
 	FoldSettingTab: class {
-		display() {
-			stub.displays += 1;
+		update() {
+			stub.updates += 1;
 		}
 	},
 }));
@@ -128,7 +128,7 @@ const connection = { queryUrl: QUERY, secretName: "fold-token", space: "garden" 
 
 beforeEach(() => {
 	stub.notices.length = 0;
-	stub.displays = 0;
+	stub.updates = 0;
 	vi.stubGlobal("window", { setInterval: () => 1, clearInterval: () => {}, setTimeout: globalThis.setTimeout.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis) });
 });
 
@@ -219,7 +219,7 @@ describe("a round a person overtakes", () => {
 		expect(plugin.settings.sync.revision).toBeNull();
 		expect(JSON.parse(plugin.saved.at(-1) ?? "{}").sync.files).toEqual(plugin.settings.sync.files);
 		// And nothing more is shown or asked of Fold, such as the settings tab listing spaces once more.
-		expect(stub.displays).toBe(0);
+		expect(stub.updates).toBe(0);
 		expect(stub.notices).toEqual([]);
 	});
 });

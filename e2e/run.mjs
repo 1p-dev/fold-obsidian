@@ -267,9 +267,20 @@ try {
 	await sleep(1500);
 	const settings = await run(`app.setting.pluginTabs.find((t) => t.id === "fold-memory")?.containerEl?.innerText ?? ""`);
 	check("the settings tab renders, with the token's secret picker", /Fold query address/.test(settings) && /Token/.test(settings) && /Check for changes/.test(settings), settings.replaceAll("\n", " / ").slice(0, 420));
-	console.log("space control:", await run(`[...app.setting.pluginTabs.find((t) => t.id === "fold-memory").containerEl.querySelectorAll("select, button, input")].map((e) => e.tagName + ":" + (e.value || e.innerText || "")).join(" | ")`));
+	const tab = `app.setting.pluginTabs.find((t) => t.id === "fold-memory")`;
+	check("it is drawn from its declarative definitions, so Obsidian's settings search finds them", await run(`${tab}.settingItems.map((d) => d.name).join() === "Fold query address,Token,Space,Check for changes"`), await run(`${tab}.settingItems.map((d) => d.name).join()`));
+	check("a vault holding notes offers Disconnect, not another space", /Holding the notes of garden/.test(settings) && (await run(`[...${tab}.containerEl.querySelectorAll("button")].some((b) => b.innerText === "Disconnect")`)));
+	check("the controls read this device's address and token name", (await run(`${tab}.getControlValue("queryUrl")`)) === `https://localhost:${PORT}` && (await run(`${tab}.getControlValue("secretName")`)) === "fold-token");
+	await run(`${tab}.setControlValue("intervalMinutes", "15")`);
+	check("choosing how often to check is saved with the vault", JSON.parse(readFileSync(join(pluginDir, "data.json"), "utf8")).intervalMinutes === 15 && (await run(`app.plugins.plugins["fold-memory"].settings.intervalMinutes`)) === 15);
+	await run(`${tab}.setControlValue("intervalMinutes", "5")`);
+	console.log("rows:", await run(`[...${tab}.containerEl.querySelectorAll(".setting-item")].map((row) => (row.querySelector(".setting-item-name")?.textContent ?? "?") + " = " + [...row.querySelectorAll("select, button, input")].map((e) => e.tagName + (e.checkVisibility({ visibilityProperty: true, opacityProperty: true }) ? "" : "(hidden)") + ":" + (e.tagName === "SELECT" ? e.value + "/" + [...e.options].map((o) => o.value + "=" + o.text).join(",") : e.value || e.innerText || "")).join(" ")).join(" | ")`));
 	await screenshot("settings");
 	await run(`app.setting.close()`);
+	const listed = requests.filter((r) => r.path === "/v1/spaces").length;
+	await run(`${tab}.update()`);
+	await sleep(500);
+	check("refreshing the closed tab asks nothing of Fold", requests.filter((r) => r.path === "/v1/spaces").length === listed);
 
 	const before = await vaultFiles();
 	const beforeBytes = readFileSync(join(vault, "inbox/windows.md"));
@@ -292,6 +303,19 @@ try {
 	// Known and recorded in the README: requestUrl follows a redirect and carries the header, with no way to stop it. This line says if that ever changes.
 	console.log(landed.length === 0 ? "note redirect: not followed" : `note redirect: followed, bearer ${landed[0].auth ? "carried, as the README says" : "dropped, so the README can be relaxed"}`);
 	check("nothing from this plugin reached the console as an error", !consoleProblems.some((p) => /fold|Fold|main\.js|plugin:fold-memory/.test(p)), consoleProblems.filter((p) => /fold|Fold|plugin:fold-memory/.test(p)).join(" | ").slice(0, 300));
+	// Disconnect last, since it ends the copy: the tab redraws itself with update(), offering the space list again, and the notes stay.
+	const kept = await vaultFiles();
+	await run(`app.commands.executeCommandById("app:open-settings")`);
+	await sleep(800);
+	await run(`app.setting.openTabById("fold-memory")`);
+	await sleep(1000);
+	const listedBefore = requests.filter((r) => r.path === "/v1/spaces").length;
+	await run(`[...${tab}.containerEl.querySelectorAll("button")].find((b) => b.innerText === "Disconnect").click()`);
+	await until("the tab to offer a space again", () => run(`[...${tab}.containerEl.querySelectorAll("select option")].some((o) => o.text === "Choose a space")`), 10_000);
+	await until("the space list", () => requests.filter((r) => r.path === "/v1/spaces").length > listedBefore, 10_000);
+	check("Disconnect redraws the tab with the space list, and keeps the notes", JSON.stringify(await vaultFiles()) === JSON.stringify(kept) && (await run(`app.plugins.plugins["fold-memory"].connection.space`)) === "" && (await run(`Object.keys(app.plugins.plugins["fold-memory"].settings.sync.files).length`)) === 0);
+	await screenshot("disconnected");
+	await run(`app.setting.close()`);
 	await run(`app.plugins.disablePlugin("fold-memory")`);
 	check("the plugin unloads cleanly", await run(`!app.plugins.plugins["fold-memory"]`));
 } catch (error) {

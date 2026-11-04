@@ -110,7 +110,7 @@ export default class FoldMemoryPlugin extends Plugin {
 			this.lastProblem = null;
 			const held = Object.keys(state.files).length;
 			this.statusBar?.setText(describeHeld(held, report));
-			if ((heldBefore === 0) !== (held === 0)) this.tab?.display();
+			if ((heldBefore === 0) !== (held === 0)) this.tab?.update();
 			const said = describeRound(report, asked, this.alreadySaid);
 			if (report.ran) this.alreadySaid = saidBy(report);
 			if (said) new Notice(said);

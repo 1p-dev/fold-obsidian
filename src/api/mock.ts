@@ -73,6 +73,8 @@ interface MockSpace {
 	conversions: Map<string, MockConversion>;
 	/** What each upload's link was for, and what has been sent through it. */
 	uploads: Map<string, { bytes: number; sha256: string; sent?: Uint8Array }>;
+	/** The revision a re-index was last asked for at, which every later revision carries (fold-store's `Revision.reindex`). */
+	reindex?: string;
 }
 
 /** A conversion, and when it finishes, with what it finds. */
@@ -708,6 +710,31 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 			space.decay = body.decay ?? space.decay;
 			space.memory = body.memory ?? space.memory;
 			return json(200, { decay: space.decay, memory: space.memory } satisfies SpaceSettings);
+		}
+
+		if (tail[0] === "reindex" && tail.length === 1) {
+			if (method !== "POST") return refuse(400, "bad-request", "that method is not one this route takes");
+			if ([...url.searchParams.keys()].length > 0) return refuse(400, "bad-request", "an unknown query parameter");
+			// The body is checked before access, as the API checks it.
+			const sent = await request.text();
+			let raw: unknown = {};
+			if (sent !== "") {
+				try {
+					raw = JSON.parse(sent);
+				} catch {
+					raw = null;
+				}
+			}
+			if (strictBody(raw, [], []) === null) return refuse(400, "bad-request", "a re-index takes no body, or an empty object");
+			if (!reaches(space.access, "admin")) return refuse(403, "not-permitted", "re-indexing a space needs admin access to it");
+			if (space.served === null) return refuse(409, "indexing", "the space has no indexed revision yet");
+			if (space.reindex !== undefined && Number(space.served) < Number(space.reindex)) {
+				return refuse(409, "reindexing", "a re-index of this space is already queued or running, so this one starts nothing: the space's status says indexing until it is done");
+			}
+			// The latest revision again, unchanged: it changes no file, and the space says indexing until it is served.
+			const revision = commit(space, () => {});
+			space.reindex = revision;
+			return json(202, { revision } satisfies Revised);
 		}
 
 		if (tail[0] === "sleep" && tail.length === 1) {

@@ -6,7 +6,7 @@ It copies a space's notes, the `inbox/` and `managed/` folders, and nothing else
 
 ## What you need
 
-- **Obsidian 1.11.4 or later.** The plugin is built to run on mobile too, but so far it has been tested on desktop only.
+- **Obsidian 1.13.4 or later.** The plugin is built to run on mobile too, but so far it has been tested on desktop only.
 - **A 1p account** with access to a Fold memory space.
 - **A token.** On 1p's token page, make a personal access token with the scope `fold:read`, and copy it. The plugin never writes to Fold, so it needs no more than that.
 - **Fold's query address,** which starts with `https://`. If you don't have it, ask 1p.
@@ -74,6 +74,8 @@ Obsidian's network requests follow a redirect to another host and carry your tok
 ## Developing
 
 `pnpm install`, then `pnpm test` runs the unit tests and `pnpm build` writes `dist/main.js` and `dist/manifest.json`.
+
+From 0.1.1, GitHub Actions builds each release from its tag and attests what it built. To check that a release's `main.js` came from this repository: `gh attestation verify main.js --repo 1p-dev/fold-obsidian`.
 
 ## Licence
 
