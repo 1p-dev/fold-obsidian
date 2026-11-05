@@ -9,9 +9,7 @@
 		"module": "ESNext",
 		"moduleResolution": "Bundler",
 		"moduleDetection": "force",
-		"types": [
-			"node"
-		],
+		"types": [],
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
 		"noImplicitOverride": true,
@@ -31,7 +29,11 @@
 		"checkJs": false
 	},
 	"include": [
-		"src",
-		"esbuild.config.mjs"
+		"src"
+	],
+	"exclude": [
+		"src/**/*.test.ts",
+		"src/test-support.ts",
+		"src/api/mock.ts"
 	]
 }

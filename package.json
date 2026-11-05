@@ -5,7 +5,7 @@
 	"type": "module",
 	"description": "An Obsidian plugin that keeps a one-way copy of a Fold memory space's notes in a vault.",
 	"scripts": {
-		"typecheck": "tsc --noEmit --checkers 1",
+		"typecheck": "tsc --noEmit --checkers 1 -p tsconfig.json && tsc --noEmit --checkers 1 -p tsconfig.test.json",
 		"test": "vitest run",
 		"build": "node esbuild.config.mjs"
 	},
