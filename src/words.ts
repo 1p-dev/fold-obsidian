@@ -1,6 +1,7 @@
 /** What the plugin says to a person, in plain words. */
 import { ApiError } from "./api/client";
 import { describeError, errorCode } from "./api/errors";
+import type { Reach } from "./reach";
 import type { SyncReport } from "./sync";
 
 export function describeRefusal(error: unknown): string {
@@ -37,6 +38,40 @@ export function describeNotSent(error: unknown): string {
 }
 
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+
+/** The Space row's description: what is missing, whether Fold answered, and what it found. `chosen` is the space this device chose, if any. */
+export function describeReach(reach: Reach, chosen = ""): string {
+	switch (reach.kind) {
+		case "no-address":
+			return "Enter Fold's address above.";
+		case "bad-address":
+			return "Fold's address must be a plain https:// address, such as the web app's where you sign in.";
+		case "no-token":
+			return "Choose your token above.";
+		case "no-secret":
+			return `Obsidian has no secret called "${reach.name}" any more. Choose your token again above.`;
+		case "connecting":
+			return "Connecting to Fold…";
+		case "web-app-found":
+			return "Fold's web app answered. Select Connect to check your token and list your spaces.";
+		case "not-web-app":
+			return "This address is not Fold's web app. Check it: it is the address where you sign in to Fold.";
+		case "not-fold":
+			return "Not connected. This address did not answer as Fold does. Check it: it is the address where you sign in to Fold.";
+		case "connected": {
+			const { spaces } = reach;
+			const found =
+				spaces.length === 0
+					? "Connected, but your token reaches no spaces. Check which organisation it was made for."
+					: chosen && !spaces.some(({ id }) => id === chosen)
+						? `Connected, but your token cannot reach the space chosen here. It reaches ${count(spaces.length, "other space")}.`
+						: `Connected. Your token reaches ${count(spaces.length, "space")}.`;
+			return reach.readsOnly ? `${found} This address only copies notes: to send edits, enter the web app's address.` : found;
+		}
+		case "failed":
+			return `Not connected. ${reach.words}`;
+	}
+}
 
 /** The status bar after a round. A space whose notes are all still being indexed holds none yet, which is not the same as having none. */
 export function describeHeld(held: number, report: SyncReport): string {

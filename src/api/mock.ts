@@ -123,8 +123,8 @@ export interface SeedSpace {
 	sleep?: Partial<Omit<SleepView, "waiting">>;
 	/** The `memory` switch; on unless this says otherwise. */
 	memory?: boolean;
-	/** A repository's space: what it syncs, whether it is connected through the GitHub App, and why its last sync failed. */
-	repository?: { name: string; branch: string; connected?: boolean; failure?: { code: string; detail: string } };
+	/** A repository's space: what it syncs, whether it is connected through the GitHub App and the login of who connected it, as a sync found it, and why its last sync failed. */
+	repository?: { name: string; branch: string; connected?: boolean; connectedBy?: string; failure?: { code: string; detail: string } };
 }
 
 /** The GitHub App's pages in the mock, as the control part builds them. */
@@ -529,6 +529,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 							repository: seed.repository.name,
 							branch: seed.repository.branch,
 							connected: seed.repository.connected ?? false,
+							// Shown, as the API shows it, only to those who may add to the space.
+							...(seed.repository.connectedBy !== undefined && reaches(seed.access, "contribute") ? { connectedBy: seed.repository.connectedBy } : {}),
 							state: seed.repository.failure ? "failed" : "never",
 							...(seed.repository.failure ? { failure: { ...seed.repository.failure, at: SEEDED_AT } } : {}),
 							skippedCount: 0,

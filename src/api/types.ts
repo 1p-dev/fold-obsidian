@@ -86,6 +86,8 @@ export interface SyncView {
 	branch: string;
 	/** Whether an admin has connected the space through Fold's GitHub App: it is then read through the App's installation, private or not, and hears each push. */
 	connected: boolean;
+	/** The GitHub login of the person who connected it, as the last sync that checked them found it: only for those who may add to the space, and left out until a sync has checked whoever connected it last, and once they lose access. */
+	connectedBy?: string;
 	state: "never" | "synced" | "catching-up" | "failed";
 	commit?: string;
 	syncedAt?: string;

@@ -22,10 +22,16 @@ export const LINK_ACTION = "fold-memory";
 const SPACE_ID = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 const NO_NOTES = "Fold: this space has no notes to copy.";
+/** What the status bar, and a person who asked for a sync, are told while the plugin cannot sync. */
+const SET_UP = {
+	missing: { bar: "Fold: not set up", notice: "Fold: set the address, the token and a space in this plugin's settings." },
+	unconfirmed: { bar: "Fold: not connected", notice: "Fold: select Connect in this plugin's settings, so your token goes to that address." },
+	"no-space": { bar: "Fold: choose a space", notice: "Fold: choose a space in this plugin's settings." },
+} as const;
 
 export default class FoldMemoryPlugin extends Plugin {
 	override settings: Saved = { intervalMinutes: DEFAULT_INTERVAL_MINUTES, sync: NOTHING_YET };
-	connection: Connection = { queryUrl: "", secretName: "", space: "", sendEdits: false };
+	connection: Connection = { queryUrl: "", secretName: "", space: "", sendEdits: false, confirmed: "" };
 	/** What a person changed here while sending was on, by the vault's path. */
 	outbox: Record<string, OutboxEntry> = {};
 	/** What a round wrote, by the vault's path, so the events its writes raise are not taken for a person's. */
@@ -33,6 +39,7 @@ export default class FoldMemoryPlugin extends Plugin {
 	private found: { text: string; addresses: Addresses } | null = null;
 	private soon: number | null = null;
 	private saidNoControl = false;
+	private saidNotSetUp = false;
 	private tab: FoldSettingTab | null = null;
 	private statusBar: HTMLElement | null = null;
 	private timer: number | null = null;
@@ -85,6 +92,41 @@ export default class FoldMemoryPlugin extends Plugin {
 
 	saveConnection(): void {
 		this.app.saveLocalStorage(CONNECTION_KEY, this.connection);
+		this.showSetUp();
+	}
+
+	/** Whether the token may go to the address saved: only once the person connected to it, since an address typed since may be half of one. */
+	connected(): boolean {
+		const { queryUrl, confirmed } = this.connection;
+		return queryAddress(queryUrl) !== null && queryUrl === confirmed;
+	}
+
+	/** The address the person connected to, from the settings' Connect, once Fold listed their spaces there. */
+	confirm(address: string): void {
+		this.connection.confirmed = address;
+		this.saveConnection();
+	}
+
+	/** Why the plugin cannot sync, or null once it can. A vault that holds notes offers no space to choose, so it is only not set up. */
+	private notSetUp(): keyof typeof SET_UP | null {
+		const { queryUrl, secretName, space } = this.connection;
+		if (!queryAddress(queryUrl) || !secretName) return "missing";
+		if (!this.connected()) return "unconfirmed";
+		if (space) return null;
+		return Object.keys(this.settings.sync.files).length > 0 ? "missing" : "no-space";
+	}
+
+	/** Says in the status bar what is missing, or, once nothing is, stops saying it: the next round says how many notes the vault holds. */
+	private showSetUp(): void {
+		const missing = this.notSetUp();
+		if (missing) this.statusBar?.setText(SET_UP[missing].bar);
+		else if (this.saidNotSetUp) this.statusBar?.setText("Fold");
+		this.saidNotSetUp = missing !== null;
+	}
+
+	/** Fold's addresses are read from its web app again at next use. */
+	forgetAddresses(): void {
+		this.found = null;
 	}
 
 	saveOutbox(): void {
@@ -125,10 +167,10 @@ export default class FoldMemoryPlugin extends Plugin {
 			return;
 		}
 		const { queryUrl, secretName } = this.connection;
-		// The link never signs anyone in: the person sets the plugin up themselves.
-		if (!queryAddress(queryUrl) || !secretName) {
+		// The link never signs anyone in: the person sets the plugin up, and connects, themselves.
+		if (!secretName || !this.connected()) {
 			this.openSettings();
-			new Notice("Fold: set the address and your token in this plugin's settings, then open the link again.");
+			new Notice("Fold: set the address and your token in this plugin's settings, select Connect, then open the link again.");
 			return;
 		}
 		if (this.saidHeld(id)) return;
@@ -227,8 +269,10 @@ export default class FoldMemoryPlugin extends Plugin {
 			return;
 		}
 		const { queryUrl, secretName, space, sendEdits } = this.connection;
-		if (!queryAddress(queryUrl) || !secretName || !space) {
-			if (asked) new Notice("Fold: set the address, the token and a space in this plugin's settings.");
+		this.showSetUp();
+		const missing = this.notSetUp();
+		if (missing) {
+			if (asked) new Notice(SET_UP[missing].notice);
 			return;
 		}
 		this.running = true;
@@ -299,7 +343,7 @@ export default class FoldMemoryPlugin extends Plugin {
 	/** A timer's round says a problem once, not every few minutes. */
 	private sayProblem(problem: unknown, asked: boolean): void {
 		// Fold's addresses are read again, in case its web app now names others.
-		this.found = null;
+		this.forgetAddresses();
 		const words = describeRefusal(problem);
 		this.statusBar?.setText("Fold: not synced");
 		if (asked || words !== this.lastProblem) new Notice(`Fold: ${words}`);

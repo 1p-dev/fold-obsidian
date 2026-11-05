@@ -197,7 +197,7 @@ try {
 	await run(`app.plugins.plugins["fold-memory"].syncNow(true)`);
 	await sleep(1500);
 	check("a vault's planted settings send the token nowhere: no address on this device, no call", evilRequests.length === 0 && requests.length === 0 && configRequests.length === 0, `${evilRequests.length} to the planted host, ${requests.length} to Fold`);
-	await run(`(() => { const plugin = app.plugins.plugins["fold-memory"]; plugin.connection.queryUrl = "https://localhost:${PORT}"; plugin.connection.secretName = "fold-token"; plugin.connection.space = "garden"; plugin.saveConnection(); })()`);
+	await run(`(() => { const plugin = app.plugins.plugins["fold-memory"]; plugin.connection.queryUrl = "https://localhost:${PORT}"; plugin.connection.secretName = "fold-token"; plugin.connection.space = "garden"; plugin.connection.confirmed = "https://localhost:${PORT}"; plugin.saveConnection(); })()`);
 	check("the address is kept on this device", (await run(`app.loadLocalStorage("fold-memory-connection")?.queryUrl`)) === `https://localhost:${PORT}`);
 	await sleep(500);
 	await run(`[...document.querySelectorAll(".modal button")].find((b) => b.textContent.includes("Trust author"))?.click()`);
@@ -387,6 +387,54 @@ try {
 	await until("the tab to offer a space again", () => run(`[...${tab}.containerEl.querySelectorAll("select option")].some((o) => o.text === "Choose a space")`), 10_000);
 	await until("the space list", () => requests.filter((r) => r.path === "/v1/spaces").length > listedBefore, 10_000);
 	check("Disconnect redraws the tab with the space list, and keeps the notes", JSON.stringify(await vaultFiles()) === JSON.stringify(kept) && (await run(`app.plugins.plugins["fold-memory"].connection.space`)) === "" && (await run(`Object.keys(app.plugins.plugins["fold-memory"].settings.sync.files).length`)) === 0);
+	// The Space row says whether it reached Fold, and asks again when the token or the address changes, with the tab left open.
+	const spaceRow = `[...${tab}.containerEl.querySelectorAll(".setting-item")].find((row) => row.querySelector(".setting-item-name")?.textContent === "Space")`;
+	const rowSays = () => run(`${spaceRow}?.querySelector(".setting-item-description")?.textContent ?? ""`);
+	// Obsidian sizes a dropdown with a hidden copy of it, marked is-measuring.
+	const rowOffers = () => run(`[...(${spaceRow}?.querySelectorAll("select:not(.is-measuring) option") ?? [])].map((o) => o.text).join()`);
+	const saysConnected = async () => /^Connected\. Your token reaches 2 spaces\./.test(await rowSays()) && (await rowOffers()) === "Choose a space,Garden,Another";
+	await until("the row to say it reached Fold", saysConnected, 10_000).catch(() => false);
+	check("the Space row says it reached Fold, and how many spaces the token reaches", await saysConnected(), `${await rowSays()} / ${await rowOffers()}`);
+	await run(`${tab}.setControlValue("secretName", "no-such-secret")`);
+	const saysGone = async () => /^Obsidian has no secret called "no-such-secret"/.test(await rowSays()) && (await rowOffers()) === "Choose a space";
+	await until("the row to name the missing secret", saysGone, 10_000).catch(() => false);
+	check("a token that is gone is said at once, without reopening the settings", await saysGone(), `${await rowSays()} / ${await rowOffers()}`);
+	await run(`${tab}.setControlValue("secretName", "fold-token")`);
+	await until("the row to connect again", saysConnected, 10_000).catch(() => false);
+	check("choosing the token again lists the spaces again, in place", await saysConnected(), `${await rowSays()} / ${await rowOffers()}`);
+	// An address typed since the settings opened might be half of one, so it is only asked, without the token, whether it is Fold's web app, and the token waits for Connect. The planted host answers everything, as a parked domain does.
+	const strayBefore = evilRequests.length;
+	await run(`${tab}.setControlValue("queryUrl", "https://127.0.0.1:${EVIL_PORT}")`);
+	const saysNotWebApp = async () => /^This address is not Fold's web app\./.test(await rowSays());
+	await until("the row to refuse to send the token to a host that is not Fold's web app", saysNotWebApp, 10_000).catch(() => false);
+	const stray = evilRequests.slice(strayBefore);
+	check("a typed address that is not Fold's web app is asked only for /config.json, without the token", (await saysNotWebApp()) && stray.length === 1 && stray[0].path === "/config.json" && stray[0].auth === undefined, `${await rowSays()} / ${JSON.stringify(stray.map((r) => r.path))}`);
+	await run(`${tab}.setControlValue("queryUrl", "http://localhost:${PORT}")`);
+	const saysPlain = async () => /^Fold's address must be a plain https:\/\/ address/.test(await rowSays());
+	await until("the row to refuse a plain http address", saysPlain, 10_000).catch(() => false);
+	check("an address that is not https is said as one", await saysPlain(), await rowSays());
+	await run(`${tab}.setControlValue("queryUrl", "https://localhost:${PORT}")`);
+	await until("the row to connect once the address rests", saysConnected, 10_000).catch(() => false);
+	check("the address saved when the settings opened connects again once it has rested", await saysConnected(), `${await rowSays()} / ${await rowOffers()}`);
+	// The same Fold, typed anew, is found without the token, and connects only on Connect.
+	const listsBefore = requests.filter((r) => r.path === "/v1/spaces").length;
+	await run(`${tab}.setControlValue("queryUrl", "https://localhost:${PORT}/")`);
+	const saysFound = async () => /^Fold's web app answered\. Select Connect/.test(await rowSays());
+	await until("the row to find Fold's web app and wait for Connect", saysFound, 10_000).catch(() => false);
+	check("a typed address that is Fold's web app waits for Connect before the token goes to it", (await saysFound()) && requests.filter((r) => r.path === "/v1/spaces").length === listsBefore, `${await rowSays()} / ${requests.filter((r) => r.path === "/v1/spaces").length - listsBefore} lists`);
+	await run(`[...(${spaceRow}?.querySelectorAll("button") ?? [])].find((b) => b.innerText === "Connect").click()`);
+	await until("the row to connect on Connect", saysConnected, 10_000).catch(() => false);
+	check("Connect sends the token and lists the spaces", await saysConnected(), `${await rowSays()} / ${await rowOffers()}`);
+	check("and the address it connected to is kept on this device as the one the token may go to", (await run(`${plugin}.connection.confirmed`)) === `https://localhost:${PORT}/`);
+	// Typed into the real field: Obsidian hands each key to the plugin as it comes, on the field's input event, so Connect always sees what the field holds. (CDP's insertText changes the value without that event here, so the test raises it as typing does.)
+	const field = `[...${tab}.containerEl.querySelectorAll(".setting-item")].find((row) => row.querySelector(".setting-item-name")?.textContent === "Fold address")?.querySelector("input")`;
+	await run(`(() => { const input = ${field}; input.value = "https://localhost:${PORT}"; input.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+	await sleep(50);
+	check("each key typed reaches the plugin at once, not only when the field loses focus", (await run(`${plugin}.connection.queryUrl`)) === `https://localhost:${PORT}`, await run(`${plugin}.connection.queryUrl`));
+	await run(`[...(${spaceRow}?.querySelectorAll("button") ?? [])].find((b) => b.innerText === "Connect").click()`);
+	await until("the typed address to connect", saysConnected, 10_000).catch(() => false);
+	check("an address typed into the field and connected is the one kept, not the one before", (await saysConnected()) && (await run(`${plugin}.connection.confirmed`)) === `https://localhost:${PORT}`, await run(`${plugin}.connection.confirmed`));
+	check("the status bar says a space is still to choose", (await run(`document.querySelector(".plugin-fold-memory")?.textContent`)) === "Fold: choose a space", await run(`document.querySelector(".plugin-fold-memory")?.textContent`));
 	await screenshot("disconnected");
 	await run(`app.setting.close()`);
 

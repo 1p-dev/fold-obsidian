@@ -16,6 +16,8 @@ export interface Connection {
 	space: string;
 	/** Whether to send the person's edits and new inbox notes to Fold. Kept here, so a vault can never turn it on. */
 	sendEdits: boolean;
+	/** The address the token may go to: the one the person connected to with Connect. An address typed since may be half of one, so nothing sends it the token until they connect to it. */
+	confirmed: string;
 }
 
 export const DEFAULT_INTERVAL_MINUTES = 5;
@@ -52,6 +54,8 @@ export function parseConnection(data: unknown): Connection {
 		secretName: typeof saved.secretName === "string" ? saved.secretName : "",
 		space: typeof saved.space === "string" ? saved.space : "",
 		sendEdits: saved.sendEdits === true,
+		// Before 0.3.1 there was no Connect. An address saved then with a space had been used to choose it; one without may have been left half-typed.
+		confirmed: typeof saved.confirmed === "string" ? saved.confirmed : typeof saved.queryUrl === "string" && typeof saved.space === "string" && saved.space ? saved.queryUrl : "",
 	};
 }
 

@@ -1,6 +1,6 @@
 {
 	"name": "fold-obsidian",
-	"version": "0.3.0",
+	"version": "0.3.1",
 	"private": true,
 	"type": "module",
 	"description": "An Obsidian plugin that keeps a one-way copy of a Fold memory space's notes in a vault.",

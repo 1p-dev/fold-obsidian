@@ -33,7 +33,8 @@ describe("the plugin as Obsidian loads it", () => {
 
 	it("takes none of the web app's interface with it", () => {
 		expect(code).not.toContain("react");
-		expect(code.length).toBeLessThan(60_000);
+		// The plugin's own code is about 60 KB. The web app's interface would add hundreds, so this catches it with room to grow.
+		expect(code.length).toBeLessThan(70_000);
 	});
 
 	it("never logs, so nothing from a note or a token reaches a console", () => {

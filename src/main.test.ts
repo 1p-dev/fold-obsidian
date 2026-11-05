@@ -213,7 +213,7 @@ describe("where a token goes", () => {
 		plugin.connection.secretName = "fold-token";
 		plugin.connection.space = "garden";
 		plugin.saveConnection();
-		expect(local.get(CONNECTION_KEY)).toEqual(connection);
+		expect(local.get(CONNECTION_KEY)).toEqual({ ...connection, confirmed: "" });
 		expect(plugin.saved).toEqual([]);
 	});
 });
@@ -309,6 +309,65 @@ describe("what goes wrong", () => {
 		await plugin.onload();
 		await plugin.syncNow(true);
 		expect(stub.notices).toEqual(["Fold: this space has no notes to copy."]);
+	});
+});
+
+describe("the status bar", () => {
+	it("says the plugin is not set up, not connected, or that a space is still to choose, rather than nothing", async () => {
+		const { plugin, requests } = setup();
+		await plugin.onload();
+		stub.bar = "";
+		await plugin.syncNow(false);
+		expect(stub.bar).toBe("Fold: not set up");
+		plugin.connection.queryUrl = QUERY;
+		plugin.connection.secretName = "fold-token";
+		plugin.saveConnection();
+		expect(stub.bar).toBe("Fold: not connected");
+		plugin.confirm(QUERY);
+		expect(stub.bar).toBe("Fold: choose a space");
+		await plugin.syncNow(false);
+		expect(stub.bar).toBe("Fold: choose a space");
+		expect(requests).toEqual([]);
+		plugin.connection.space = "garden";
+		plugin.saveConnection();
+		// Set up now: it stops saying otherwise, and the next round says what the vault holds.
+		expect(stub.bar).toBe("Fold");
+		await plugin.syncNow(false);
+		expect(stub.bar).toBe("Fold: 2 notes");
+	});
+
+	it("says a vault that holds notes is not set up on this device, since it offers no space to choose", async () => {
+		const { plugin } = setup({ connection: { ...connection, space: "", confirmed: QUERY } });
+		await plugin.onload();
+		plugin.settings.sync = { space: "garden", revision: "1", files: { "managed/b.md": "0".repeat(64) }, opened: {}, refused: {} };
+		await plugin.syncNow(false);
+		expect(stub.bar).toBe("Fold: not set up");
+	});
+});
+
+describe("an address the person has not connected to", () => {
+	it("is sent nothing by a round, which says what to do when asked, and the round runs once they connect", async () => {
+		const { plugin, requests } = setup({ connection: { ...connection, queryUrl: "https://query.fold.te", confirmed: QUERY } });
+		await plugin.onload();
+		await plugin.syncNow(false);
+		await plugin.syncNow(true);
+		expect(requests).toEqual([]);
+		expect(stub.bar).toBe("Fold: not connected");
+		expect(stub.notices).toEqual(["Fold: select Connect in this plugin's settings, so your token goes to that address."]);
+		plugin.connection.queryUrl = QUERY;
+		plugin.saveConnection();
+		await plugin.syncNow(false);
+		expect(requests.length).toBeGreaterThan(0);
+	});
+
+	it("is sent nothing by a link from Fold's web app, which opens the settings instead", async () => {
+		const { plugin, requests } = setup({ connection: { ...connection, space: "", queryUrl: "https://query.fold.te", confirmed: QUERY } });
+		(plugin as unknown as { manifest: { id: string } }).manifest = { id: "fold-memory" };
+		await plugin.onload();
+		await plugin.openLink({ action: "fold-memory", space: "garden" });
+		expect(requests).toEqual([]);
+		expect(stub.settingsOpened).toEqual(["settings", "fold-memory"]);
+		expect(stub.notices[0]).toContain("select Connect");
 	});
 });
 
@@ -411,7 +470,7 @@ describe("what a person changes, with sending on", () => {
 });
 
 describe("a link from Fold's web app", () => {
-	const fresh = { ...connection, space: "", sendEdits: true };
+	const fresh = { ...connection, space: "", sendEdits: true, confirmed: QUERY };
 	/** A confirmed link starts a round: wait for it, so its words do not land in the next test. */
 	const roundDone = (plugin: unknown) => vi.waitFor(() => expect((plugin as { running: boolean }).running).toBe(false));
 	const open = async (space: string | undefined) => {

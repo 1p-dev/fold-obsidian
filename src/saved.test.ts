@@ -35,8 +35,15 @@ describe("what a vault's saved data can say", () => {
 
 describe("the connection", () => {
 	it("is read from this device's storage, and is empty when it is not there or not in shape", () => {
-		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true })).toEqual({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true });
-		for (const nothing of [null, undefined, "x", [], { queryUrl: 1, secretName: {}, space: [], sendEdits: "yes" }]) expect(parseConnection(nothing)).toEqual({ queryUrl: "", secretName: "", space: "", sendEdits: false });
+		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true, confirmed: "https://other" })).toEqual({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true, confirmed: "https://other" });
+		for (const nothing of [null, undefined, "x", [], { queryUrl: 1, secretName: {}, space: [], sendEdits: "yes", confirmed: 2 }]) expect(parseConnection(nothing)).toEqual({ queryUrl: "", secretName: "", space: "", sendEdits: false, confirmed: "" });
+	});
+
+	it("takes an address saved before Connect existed as the one connected to only if a space was chosen through it, so an update breaks no working vault", () => {
+		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s" }).confirmed).toBe("https://q");
+		expect(parseConnection({ queryUrl: "https://hal", secretName: "n", space: "" }).confirmed).toBe("");
+		expect(parseConnection({ queryUrl: "https://hal", secretName: "n" }).confirmed).toBe("");
+		expect(parseConnection({ queryUrl: "https://half", secretName: "n", space: "s", confirmed: "" }).confirmed).toBe("");
 	});
 
 	it("sends nothing unless a person turned sending on, as 0.1's connections never did", () => {

@@ -27,9 +27,11 @@ To install it by hand instead, put `main.js` and `manifest.json` from the [lates
 1. In Settings, select **Fold memory** in the sidebar, under Community plugins.
 2. Paste Fold's address into **Fold address**.
 3. Under **Token**, select **Select secret**, then **Add secret...**. Give it an ID such as `fold`, paste your token as the **Secret**, and add it. Obsidian keeps the token in its own secret storage.
-4. Under **Space**, choose the space.
+4. Under **Space**, select **Connect**, then choose the space.
 
-The notes then arrive, and the status bar at the bottom shows how many the vault holds.
+The Space setting says whether the plugin reached Fold: "Connected" and how many spaces your token reaches, or what is wrong, such as an address that is not `https://`, a token Fold refused, or a token that reaches no spaces. It asks again as soon as you change the address or the token, so you never need to close the settings to see. A new address is first only checked, without your token, and the setting says whether it is Fold's web app; select **Connect** to send your token there and list your spaces. Until you do, nothing is sent to that address, not even by a sync, so half of an address, typed on the way to the whole one, never receives your token.
+
+The notes then arrive, and the status bar at the bottom shows how many the vault holds. Until then it says "Fold: not set up", "Fold: not connected" or "Fold: choose a space".
 
 The address, the token's name, the chosen space and whether sending is on are kept on this device only, never in the vault. A vault can be synced or shared, so nothing in it ever decides where your token goes, what it reads or what it sends. On another device, you enter them again.
 
