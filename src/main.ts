@@ -1,7 +1,8 @@
 /** The plugin: settings, a timer and a command around one sync, and notes shown as read-only. */
-import { MarkdownView, normalizePath, Notice, Plugin, requestUrl, type TAbstractFile, TFile, type WorkspaceLeaf } from "obsidian";
+import { MarkdownView, normalizePath, Notice, type ObsidianProtocolData, Plugin, requestUrl, type TAbstractFile, TFile, type WorkspaceLeaf } from "obsidian";
 import { type Addresses, foldClient, queryAddress, resolveAddresses } from "./fold";
 import { sha256 } from "./hash";
+import { ConnectModal } from "./link-modal";
 import { isNote, localForm } from "./notes";
 import { type Connection, DEFAULT_INTERVAL_MINUTES, type OutboxEntry, parseConnection, parseOutbox, parseSaved, type Saved } from "./saved";
 import { FoldSettingTab } from "./settings";
@@ -15,6 +16,10 @@ export const CONNECTION_KEY = "fold-memory-connection";
 export const OUTBOX_KEY = "fold-memory-outbox";
 /** A change goes once a note has been left this long, so a note being written is sent once it is finished, not at every save. */
 export const QUIET_MS = 60_000;
+/** The action of the link Fold's web app shows on a space: `obsidian://fold-memory?space=<id>`. */
+export const LINK_ACTION = "fold-memory";
+/** A space's id as Fold makes them, and nothing a link could use to reach anything else. */
+const SPACE_ID = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 const NO_NOTES = "Fold: this space has no notes to copy.";
 
@@ -43,6 +48,7 @@ export default class FoldMemoryPlugin extends Plugin {
 		this.statusBar = this.addStatusBarItem();
 		this.addRibbonIcon("refresh-cw", "Fold: sync notes now", () => void this.syncNow(true));
 		this.addCommand({ id: "sync-now", name: "Sync notes now", callback: () => void this.syncNow(true) });
+		this.registerObsidianProtocolHandler(LINK_ACTION, (params) => void this.openLink(params));
 		this.tab = new FoldSettingTab(this.app, this);
 		this.addSettingTab(this.tab);
 		this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => this.showAsRead(leaf)));
@@ -107,6 +113,66 @@ export default class FoldMemoryPlugin extends Plugin {
 	clearOutbox(): void {
 		this.outbox = {};
 		this.saveOutbox();
+	}
+
+	/**
+	 * `obsidian://fold-memory?space=<id>`, the link Fold's web app shows on a space. Any page can make such a link, so it carries only a space's id; the person is asked first, about the space as Fold reports it through their own address and token; a vault holding notes is never switched; and a space chosen this way starts with sending off.
+	 */
+	async openLink(params: ObsidianProtocolData): Promise<void> {
+		const id = params.space;
+		if (typeof id !== "string" || !SPACE_ID.test(id)) {
+			new Notice("Fold: this link does not name a space.");
+			return;
+		}
+		const { queryUrl, secretName } = this.connection;
+		// The link never signs anyone in: the person sets the plugin up themselves.
+		if (!queryAddress(queryUrl) || !secretName) {
+			this.openSettings();
+			new Notice("Fold: set the address and your token in this plugin's settings, then open the link again.");
+			return;
+		}
+		if (this.saidHeld(id)) return;
+		let found: { title: string; organisation: string } | undefined;
+		try {
+			const addresses = await this.addresses(queryUrl);
+			if (!addresses) return;
+			const list = await foldClient(addresses, () => this.app.secretStorage.getSecret(secretName), requestUrl).listSpaces();
+			const space = list.spaces.find((candidate) => candidate.id === id);
+			if (space) found = { title: space.title, organisation: space.organization.name };
+		} catch (error) {
+			new Notice(`Fold: ${describeRefusal(error)}`);
+			return;
+		}
+		if (!found) {
+			new Notice("Fold: your token can't reach that space, or there is no such space.");
+			return;
+		}
+		new ConnectModal(this.app, found.title, found.organisation, () => void this.connectTo(id)).open();
+	}
+
+	/** A vault holds one space, so a link never switches one that holds notes, its own included. */
+	private saidHeld(id: string): boolean {
+		const { sync } = this.settings;
+		if (Object.keys(sync.files).length === 0) return false;
+		new Notice(sync.space === id ? "Fold: this vault already holds that space." : "Fold: this vault holds another space's notes. Disconnect in this plugin's settings first, or open the link in another vault.");
+		return true;
+	}
+
+	/** The space a person confirmed from a link. */
+	private async connectTo(id: string): Promise<void> {
+		// Notes may have come meanwhile.
+		if (this.saidHeld(id)) return;
+		this.connection.space = id;
+		// Otherwise a page could send a person's next inbox notes to a space it chose: they turn sending on themselves.
+		this.setSending(false);
+		this.tab?.update();
+		await this.syncNow(true);
+	}
+
+	private openSettings(): void {
+		const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+		setting?.open();
+		setting?.openTabById(this.manifest.id);
 	}
 
 	/** Fold's addresses, read from its web app once a session for each address entered. */

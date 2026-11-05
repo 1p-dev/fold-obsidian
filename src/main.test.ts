@@ -13,6 +13,11 @@ const stub = vi.hoisted(() => ({
 	store: null as unknown,
 	updates: 0,
 	bar: "",
+	/** The link handler the plugin registered, by action. */
+	links: new Map<string, (params: Record<string, string>) => unknown>(),
+	/** What the link's question showed, and its Connect button. */
+	asked: [] as { title: string; organisation: string; connect: () => void }[],
+	settingsOpened: [] as string[],
 }));
 
 vi.mock("obsidian", () => {
@@ -38,6 +43,9 @@ vi.mock("obsidian", () => {
 		addSettingTab() {}
 		registerEvent() {}
 		register() {}
+		registerObsidianProtocolHandler(action: string, handler: (params: Record<string, string>) => unknown) {
+			stub.links.set(action, handler);
+		}
 		registerInterval(timer: number) {
 			return timer;
 		}
@@ -62,6 +70,14 @@ vi.mock("./settings", () => ({
 		update() {
 			stub.updates += 1;
 		}
+	},
+}));
+vi.mock("./link-modal", () => ({
+	ConnectModal: class {
+		constructor(_app: unknown, title: string, organisation: string, connect: () => void) {
+			stub.asked.push({ title, organisation, connect });
+		}
+		open() {}
 	},
 }));
 vi.mock("./vault-store", () => ({
@@ -116,6 +132,7 @@ function setup(options: { dataFile?: unknown; connection?: unknown; files?: Reco
 			},
 		},
 		workspace: { on: () => ({}), onLayoutReady: () => {}, getActiveViewOfType: () => null },
+		setting: { open: () => stub.settingsOpened.push("settings"), openTabById: (id: string) => stub.settingsOpened.push(id) },
 		vault: {
 			readBinary: async (file: { path: string }) => ((await store.read(file.path)) ?? new Uint8Array()).slice().buffer,
 			getAbstractFileByPath: (path: string) => (folders.has(path) ? { path } : null),
@@ -149,6 +166,9 @@ const connection = { queryUrl: QUERY, secretName: "fold-token", space: "garden",
 beforeEach(() => {
 	stub.notices.length = 0;
 	stub.updates = 0;
+	stub.links.clear();
+	stub.asked.length = 0;
+	stub.settingsOpened.length = 0;
 	vi.stubGlobal("window", { setInterval: () => 1, clearInterval: () => {}, setTimeout: globalThis.setTimeout.bind(globalThis), clearTimeout: globalThis.clearTimeout.bind(globalThis) });
 });
 
@@ -387,5 +407,90 @@ describe("what a person changes, with sending on", () => {
 		await changed(plugin, "managed/b.md", true);
 		await changed(plugin, "inbox/a.md");
 		expect(plugin.outbox).toEqual({});
+	});
+});
+
+describe("a link from Fold's web app", () => {
+	const fresh = { ...connection, space: "", sendEdits: true };
+	/** A confirmed link starts a round: wait for it, so its words do not land in the next test. */
+	const roundDone = (plugin: unknown) => vi.waitFor(() => expect((plugin as { running: boolean }).running).toBe(false));
+	const open = async (space: string | undefined) => {
+		const handler = stub.links.get("fold-memory");
+		expect(handler).toBeDefined();
+		// Obsidian does not wait on a link's handler, so the test waits for what it does: say something, ask, or open the settings.
+		const before = stub.notices.length + stub.asked.length + stub.settingsOpened.length;
+		handler!({ action: "fold-memory", ...(space === undefined ? {} : { space }) });
+		await vi.waitFor(() => expect(stub.notices.length + stub.asked.length + stub.settingsOpened.length).toBeGreaterThan(before));
+	};
+
+	it("names only a space, and anything else is refused with nothing done", async () => {
+		const { plugin, requests } = setup({ connection: fresh, webApp: true });
+		(plugin as unknown as { manifest: { id: string } }).manifest = { id: "fold-memory" };
+		await plugin.onload();
+		for (const space of [undefined, "", "../garden", "Garden", "garden?x=1", "a".repeat(101)]) await open(space);
+		expect(stub.asked).toEqual([]);
+		expect(requests).toEqual([]);
+		expect(plugin.connection.space).toBe("");
+		expect(stub.notices.every((notice) => notice === "Fold: this link does not name a space.")).toBe(true);
+	});
+
+	it("opens the settings and says why when the plugin is not set up, and signs no one in", async () => {
+		const { plugin, requests } = setup({ connection: { ...fresh, secretName: "" } });
+		(plugin as unknown as { manifest: { id: string } }).manifest = { id: "fold-memory" };
+		await plugin.onload();
+		await open("garden");
+		expect(stub.settingsOpened).toEqual(["settings", "fold-memory"]);
+		expect(stub.notices[0]).toContain("settings");
+		expect(stub.asked).toEqual([]);
+		expect(requests).toEqual([]);
+		expect(plugin.connection.space).toBe("");
+	});
+
+	it("asks first, naming the space as Fold reports it through the person's own address and token, and changes nothing until they confirm", async () => {
+		const { plugin, requests, store } = setup({ connection: fresh, webApp: true });
+		await plugin.onload();
+		await open("garden");
+		expect(stub.asked.map(({ title, organisation }) => ({ title, organisation }))).toEqual([{ title: "G", organisation: "O" }]);
+		expect(requests.filter((request) => !request.url.endsWith("/config.json")).every((request) => request.url === `${QUERY}/v1/spaces` && request.auth === `Bearer ${TOKEN}`)).toBe(true);
+		expect(plugin.connection.space).toBe("");
+		expect(store.files.size).toBe(0);
+		stub.asked[0]!.connect();
+		await roundDone(plugin);
+		expect(store.files.size).toBe(2);
+		expect(plugin.connection.space).toBe("garden");
+	});
+
+	it("starts a space chosen this way with sending off, so a page cannot pick where a person's notes go", async () => {
+		const { plugin } = setup({ connection: fresh, webApp: true });
+		await plugin.onload();
+		plugin.outbox = { "inbox/waiting.md": { at: 1, created: true } };
+		await open("garden");
+		stub.asked[0]!.connect();
+		await roundDone(plugin);
+		expect(plugin.connection.space).toBe("garden");
+		expect(plugin.connection.sendEdits).toBe(false);
+		expect(plugin.outbox).toEqual({});
+	});
+
+	it("never switches a vault that holds notes, whether of another space or of this one", async () => {
+		const { plugin, requests } = setup({ connection, webApp: true });
+		await plugin.onload();
+		await plugin.syncNow(false);
+		const before = requests.length;
+		stub.notices.length = 0;
+		await open("another-space");
+		await open("garden");
+		expect(stub.asked).toEqual([]);
+		expect(requests.length).toBe(before);
+		expect(stub.notices).toEqual(["Fold: this vault holds another space's notes. Disconnect in this plugin's settings first, or open the link in another vault.", "Fold: this vault already holds that space."]);
+		expect(plugin.connection.space).toBe("garden");
+	});
+
+	it("says so when the person's token cannot reach the space, and asks nothing", async () => {
+		const { plugin } = setup({ connection: fresh, webApp: true });
+		await plugin.onload();
+		await open("someone-elses-space");
+		expect(stub.asked).toEqual([]);
+		expect(stub.notices).toEqual(["Fold: your token can't reach that space, or there is no such space."]);
 	});
 });

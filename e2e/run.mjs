@@ -389,6 +389,28 @@ try {
 	check("Disconnect redraws the tab with the space list, and keeps the notes", JSON.stringify(await vaultFiles()) === JSON.stringify(kept) && (await run(`app.plugins.plugins["fold-memory"].connection.space`)) === "" && (await run(`Object.keys(app.plugins.plugins["fold-memory"].settings.sync.files).length`)) === 0);
 	await screenshot("disconnected");
 	await run(`app.setting.close()`);
+
+	// A link from Fold's web app, as obsidian://fold-memory?space=garden reaches the plugin: it asks first, about the space as Fold reports it, and connects only on the person's word, with sending off.
+	const modals = `[...new Set([document, activeWindow.document])].flatMap((d) => [...d.querySelectorAll(".modal")])`;
+	const press = (text) => run(`${modals}.flatMap((m) => [...m.querySelectorAll("button")]).find((b) => b.textContent === ${JSON.stringify(text)}).click()`);
+	await run(`${plugin}.setSending(true)`);
+	await run(`${plugin}.openLink({ action: "fold-memory", space: "garden" })`);
+	await until("the link's question", () => run(`${modals}.some((m) => m.textContent.includes("Connect this vault to this space?"))`), 10_000);
+	const question = await run(`${modals}.map((m) => m.textContent).join(" | ")`);
+	await screenshot("link");
+	check("a link from Fold's web app asks first, naming the space as Fold reports it", /Garden, in O\./.test(question), question.slice(0, 200));
+	await press("Cancel");
+	await sleep(500);
+	check("and cancelling it changes nothing", (await run(`${plugin}.connection.space`)) === "" && (await run(`${modals}.length`)) === 0);
+	await run(`${plugin}.openLink({ action: "fold-memory", space: "garden" })`);
+	await until("the link's question", () => run(`${modals}.some((m) => m.textContent.includes("Connect this vault to this space?"))`), 10_000);
+	await press("Connect");
+	await until("the vault to connect", () => run(`${plugin}.connection.space === "garden" && !${plugin}.running && Object.keys(${plugin}.settings.sync.files).length > 0`), 30_000);
+	check("confirming it connects the vault to the space, with sending off", (await run(`${plugin}.connection.sendEdits`)) === false);
+	await clearNotices();
+	await run(`${plugin}.openLink({ action: "fold-memory", space: "another" })`);
+	await sleep(500);
+	check("and a link to another space then changes nothing", /holds another space's notes/.test(await noticesNow()) && (await run(`${plugin}.connection.space`)) === "garden" && (await run(`${modals}.length`)) === 0, await noticesNow());
 	await run(`app.plugins.disablePlugin("fold-memory")`);
 	check("the plugin unloads cleanly", await run(`!app.plugins.plugins["fold-memory"]`));
 } catch (error) {

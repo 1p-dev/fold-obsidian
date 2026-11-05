@@ -51,6 +51,12 @@ With **Send edits to Fold** on:
 - **Deleting or renaming a note here never reaches Fold,** and the note comes back from Fold. A new note in `managed/` stays here, since Fold files notes there itself. If Obsidian updates links when you rename a note, the notes it changes count as your edits.
 - **An edit to a note in `managed/`** reaches Fold only where Fold accepts edits to managed notes. Otherwise Fold refuses it, the plugin says why, and your edit stays here.
 
+## Open a space from Fold
+
+On a space's page, Fold's web app links to Obsidian. The plugin then asks you to confirm, naming the space and its organisation as Fold reports them to you, and connects this vault to it only if you do. A space connected this way starts with sending off.
+
+The link names only the space: it never sets Fold's address or your token. So set the plugin up first. If it has no address or token yet, the link opens its settings instead. A vault that already holds a space's notes is never switched by a link.
+
 ## What it does
 
 - **Checks for changes** every 5 minutes while Obsidian is open, and whenever you run "Sync notes now" from the command palette or the ribbon. You can choose every minute, 15 minutes or hour instead. Checking reads no notes, and a sync reads only the notes that changed.

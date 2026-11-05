@@ -1,7 +1,7 @@
 {
 	"id": "fold-memory",
 	"name": "Fold memory",
-	"version": "0.2.2",
+	"version": "0.3.0",
 	"minAppVersion": "1.13.4",
 	"description": "Keeps a copy of a Fold memory space's notes in your vault, and can send your edits back.",
 	"author": "1p",
