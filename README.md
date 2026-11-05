@@ -47,7 +47,7 @@ With **Send edits to Fold** on:
 - **Write a new note in `inbox/`,** and it is saved to the space's inbox at the same path, for Fold to file like any other note. Contribute access is enough for this. The plugin makes an empty `inbox/` folder if the vault has none.
 - **If the note changed in Fold meanwhile,** Fold refuses your edit. Fold's version comes in, and your edit is kept beside it as `name (local edit).md`, so you can bring it across.
 - **If Fold refuses a note,** for example because your access is not enough or the note seems to hold a password, the plugin says why. It does not send that note again until you change it, or run "Sync notes now".
-- **Only what you change after turning it on is sent.** Earlier edits, and files a vault came with, stay here.
+- **Only what you change after turning it on is sent.** Earlier edits stay here. A new note is sent only if you make it here after turning sending on: a file the vault already had stays here, even if you change it.
 - **Deleting or renaming a note here never reaches Fold,** and the note comes back from Fold. A new note in `managed/` stays here, since Fold files notes there itself. If Obsidian updates links when you rename a note, the notes it changes count as your edits.
 - **An edit to a note in `managed/`** reaches Fold only where Fold accepts edits to managed notes. Otherwise Fold refuses it, the plugin says why, and your edit stays here.
 

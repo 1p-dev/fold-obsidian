@@ -45,8 +45,12 @@ describe("the connection", () => {
 });
 
 describe("what waits to be sent", () => {
-	it("is each path with when it changed, and nothing else", () => {
-		expect(parseOutbox({ "inbox/a.md": 5, "inbox/b.md": "5", "inbox/c.md": Number.NaN })).toEqual({ "inbox/a.md": 5 });
+	it("is each path with when it changed and whether it was made here, and nothing else", () => {
+		expect(parseOutbox({ "inbox/a.md": { at: 5, created: true }, "inbox/b.md": { at: "5" }, "inbox/c.md": { at: Number.NaN }, "inbox/d.md": { at: 6, created: "yes" } })).toEqual({ "inbox/a.md": { at: 5, created: true }, "inbox/d.md": { at: 6, created: false } });
 		for (const nothing of [null, "x", [1]]) expect(parseOutbox(nothing)).toEqual({});
+	});
+
+	it("takes what 0.2.0 kept, only when, as an edit, never a new note", () => {
+		expect(parseOutbox({ "inbox/a.md": 5, "inbox/b.md": Number.NaN })).toEqual({ "inbox/a.md": { at: 5, created: false } });
 	});
 });

@@ -16,6 +16,8 @@ export class MemoryStore implements Store {
 	/** Paths that cannot be written, or read, such as a locked file. */
 	readonly locked = new Set<string>();
 	readonly unreadable = new Set<string>();
+	/** Hears each write before it is made, as the vault's store tells the plugin. */
+	written: ((path: string, bytes: Uint8Array) => void) | undefined;
 
 	put(path: string, text: string): void {
 		this.files.set(localForm(path), encoder.encode(text));
@@ -33,6 +35,7 @@ export class MemoryStore implements Store {
 	}
 	async write(path: string, bytes: Uint8Array): Promise<void> {
 		if (this.failWrites || this.locked.has(path)) throw new Error("the disk refused");
+		this.written?.(localForm(path), bytes);
 		this.log.push(`write ${path}`);
 		this.files.set(localForm(path), bytes);
 	}

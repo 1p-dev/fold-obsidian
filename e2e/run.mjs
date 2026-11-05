@@ -318,6 +318,9 @@ try {
 	const plugin = `app.plugins.plugins["fold-memory"]`;
 	const noticesNow = () => run(`[...new Set([document, activeWindow.document])].flatMap((d) => [...d.querySelectorAll(".notice")]).map((n) => n.textContent).join(" | ")`);
 	const clearNotices = () => run(`[...new Set([document, activeWindow.document])].forEach((d) => d.querySelectorAll(".notice").forEach((n) => n.remove()))`);
+	// A file the vault already has, which Fold knows nothing about, written on disk while sending is off.
+	writeFileSync(join(vault, "inbox/came with the vault.md"), "# A file the vault came with\r\n");
+	await until("Obsidian to see the file", () => run(`app.vault.getAbstractFileByPath("inbox/came with the vault.md") !== null`), 10_000);
 	await run(`${tab}.setControlValue("sendEdits", true)`);
 	check("sending is turned on for this device only, with nothing from before waiting", (await run(`${plugin}.connection.sendEdits`)) === true && JSON.parse(readFileSync(join(pluginDir, "data.json"), "utf8")).sendEdits === undefined && (await run(`Object.keys(${plugin}.outbox).length`)) === 0);
 	check("Fold's addresses came from its web app's settings, asked for without the token", configRequests.length > 0 && configRequests.every((r) => !r.auth), `${configRequests.length} asks`);
@@ -329,6 +332,8 @@ try {
 	await run(`app.vault.modify(app.vault.getAbstractFileByPath("inbox/non breaking.md"), "# Edited in Obsidian\\n")`);
 	await run(`app.vault.create("inbox/from obsidian.md", "# Written in Obsidian\\n")`);
 	await until("the two changes to be noted", () => run(`Object.keys(${plugin}.outbox).sort().join() === "inbox/from obsidian.md,inbox/non breaking.md"`), 10_000);
+	// Obsidian may raise a second event for the same change, and a change marked after a round starts waits for the next.
+	await sleep(1500);
 	await clearNotices();
 	await syncNow();
 	let heads = api.headFiles("garden");
@@ -339,20 +344,24 @@ try {
 	check("and it says so", /sent/.test(await noticesNow()) && /saved to the space's inbox/.test(await noticesNow()), await noticesNow());
 	check("and nothing is left waiting", (await run(`Object.keys(${plugin}.outbox).length`)) === 0);
 
+	await run(`app.vault.modify(app.vault.getAbstractFileByPath("inbox/came with the vault.md"), "# Changed, though the vault came with it\\n")`);
+	await sleep(500);
+	const cameFrom = requests.length;
+	await syncNow();
+	check("a file the vault already had is never sent as a new note, even once it changes", requests.slice(cameFrom).every((r) => r.method === "GET") && api.headFiles("garden")["inbox/came with the vault.md"] === undefined, requests.slice(cameFrom).filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`).join(" "));
+
 	await run(`app.vault.modify(app.vault.getAbstractFileByPath("managed/roses.md"), "# Roses, corrected in Obsidian\\n")`);
 	await until("the change to be noted", () => run(`${plugin}.outbox["managed/roses.md"] !== undefined`), 10_000);
+	await sleep(1500);
 	await clearNotices();
 	await syncNow();
-	if (api.headFiles("garden")["managed/roses.md"] === "# Roses, corrected in Obsidian\n") {
-		check("an edit to a managed note reached Fold", true);
-	} else {
-		// Until editors may change any file, Fold takes no edit to a managed note: the edit stays here, and Fold's reason is given.
-		check("an edit to a managed note Fold does not take yet stays here, with Fold's reason", readFileSync(join(vault, "managed/roses.md"), "utf8") === "# Roses, corrected in Obsidian\n" && /not sent: Fold refused it/.test(await noticesNow()), await noticesNow());
-	}
+	// An editor changes a managed note like any file (decided 4 November, "Editors may change any file"), so the edit must reach Fold, and nothing waits.
+	check("an edit to a managed note reached Fold", api.headFiles("garden")["managed/roses.md"] === "# Roses, corrected in Obsidian\n" && (await run(`${plugin}.outbox["managed/roses.md"] === undefined`)), `${JSON.stringify(api.headFiles("garden")["managed/roses.md"])} ${await noticesNow()}`);
 
 	await change("PUT", "inbox/from obsidian.md", { text: "# Changed by an agent\n" });
 	await run(`app.vault.modify(app.vault.getAbstractFileByPath("inbox/from obsidian.md"), "# Changed in Obsidian too\\n")`);
 	await until("the change to be noted", () => run(`${plugin}.outbox["inbox/from obsidian.md"] !== undefined`), 10_000);
+	await sleep(1500);
 	await syncNow();
 	check("an edit to a note that changed in Fold meanwhile is not sent, and stays beside Fold's version", api.headFiles("garden")["inbox/from obsidian.md"] === "# Changed by an agent\n" && readFileSync(join(vault, "inbox/from obsidian.md"), "utf8") === "# Changed by an agent\n" && readFileSync(join(vault, "inbox/from obsidian (local edit).md"), "utf8") === "# Changed in Obsidian too\n");
 

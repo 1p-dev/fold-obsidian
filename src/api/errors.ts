@@ -29,10 +29,14 @@ export function describeError(error: unknown): string {
 			return "Couldn't check your sign-in: 1p did not answer. Try again in a moment.";
 		case "embedding-unavailable":
 			return "Search is unavailable for a moment: the embedding model did not answer. Try again shortly.";
+		case "github-unavailable":
+			return "GitHub did not answer, or asked Fold to slow down. Try again in a moment.";
+		case "not-set-up":
+			return "Fold's GitHub App is not set up yet, so a repository cannot be connected.";
 		case "unsupported-type":
 			return "Fold doesn't take this kind of file here. Spaces hold text, such as Markdown, and PDF, Word and PowerPoint files, which go in reference/ and which Fold converts.";
 		case "too-large":
-			return "This is too large for Fold to take: a file's text is at most 1 MiB, and a PDF, Word or PowerPoint file at most 80 MB.";
+			return "This is too large for Fold to take: a managed note is at most 150 KB, any other file's text 1 MiB, and a PDF, Word or PowerPoint file 80 MB.";
 		case "name-taken":
 			return "Another note in this space already has that name, in another folder or case. Choose a different name.";
 		case "no-previous-version":
@@ -55,4 +59,12 @@ export function describeError(error: unknown): string {
 
 export function errorCode(error: unknown): string | null {
 	return error instanceof ApiError ? error.code : null;
+}
+
+/** A refusal of the GitHub App's setup: its reason is about the person's GitHub, which only the API's own sentence says, such as needing write access to the repository. */
+export function describeSetupError(error: unknown): string {
+	if (error instanceof ApiError && (error.code === "not-permitted" || error.code === "bad-request") && error.detail) {
+		return `${error.detail.charAt(0).toUpperCase()}${error.detail.slice(1).replace(/\.$/, "")}.`;
+	}
+	return describeError(error);
 }

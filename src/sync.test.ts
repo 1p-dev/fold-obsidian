@@ -817,7 +817,10 @@ describe("when something goes wrong", () => {
 describe("what goes back to Fold", () => {
 	const NOW = 1_000_000;
 	/** Paths a person changed here a while ago, so they are quiet and go. */
-	const changed = (...paths: string[]): Outgoing => ({ changed: Object.fromEntries(paths.map((path) => [path, NOW - 120_000])), quietSince: NOW - 60_000 });
+	const changed = (...paths: string[]): Outgoing => ({ changed: Object.fromEntries(paths.map((path) => [path, NOW - 120_000])), created: new Set(), quietSince: NOW - 60_000 });
+	/** Paths a person made here, by creating a file or renaming one to it. */
+	const made = (...paths: string[]): Outgoing => ({ ...changed(...paths), created: new Set(paths) });
+	const nothing: Outgoing = { changed: {}, created: new Set(), quietSince: NOW };
 	const send = (fold: FakeFold, store: MemoryStore, state: SyncState, outgoing: Outgoing, force = false) => syncSpace(fold, store, state, { ...SPACE, force, outgoing });
 	async function copied(notes: Record<string, string>) {
 		const fold = new FakeFold({ "PURPOSE.md": "# S\n", ...notes });
@@ -862,7 +865,7 @@ describe("what goes back to Fold", () => {
 	it("waits while a note is still being written, and a quiet Fold is then asked only its status", async () => {
 		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
 		store.put("inbox/a.md", "# A, half written\n");
-		const { report } = await send(fold, store, state, { changed: { "inbox/a.md": NOW }, quietSince: NOW - 60_000 });
+		const { report } = await send(fold, store, state, { changed: { "inbox/a.md": NOW }, created: new Set(), quietSince: NOW - 60_000 });
 		expect(fold.writes).toEqual([]);
 		expect(report).toMatchObject({ ran: false, done: [] });
 	});
@@ -871,7 +874,7 @@ describe("what goes back to Fold", () => {
 		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
 		store.put("inbox/a.md", "# Edited while it was read-only\n");
 		store.put("inbox/came-with-the-vault.md", "# Planted\n");
-		const { report } = await send(fold, store, state, { changed: {}, quietSince: NOW }, true);
+		const { report } = await send(fold, store, state, nothing, true);
 		expect(fold.writes).toEqual([]);
 		expect(report.sent).toEqual([]);
 		expect(store.text("inbox/a.md")).toBe("# Edited while it was read-only\n");
@@ -910,7 +913,7 @@ describe("what goes back to Fold", () => {
 		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
 		store.put("inbox/mine.md", "# Mine\n");
 		fold.notIndexed.add("inbox/mine.md");
-		const { state: after, report } = await send(fold, store, state, changed("inbox/mine.md"));
+		const { state: after, report } = await send(fold, store, state, made("inbox/mine.md"));
 		expect(fold.writes).toEqual([{ path: "inbox/mine.md", text: "# Mine\n", ifRevision: "1" }]);
 		expect(report).toMatchObject({ added: ["inbox/mine.md"], sent: [], done: ["inbox/mine.md"], trashed: 0 });
 		expect(after.files["inbox/mine.md"]).toBe(await sha256(new TextEncoder().encode("# Mine\n")));
@@ -932,9 +935,18 @@ describe("what goes back to Fold", () => {
 		store.put("inbox/data.csv", "a,b\n");
 		store.put("Inbox/elsewhere.md", "# Not a note\n");
 		const paths = ["inbox/renamed.md", "inbox/copy-of-b.md", "managed/mine.md", "inbox/a (local edit).md", "inbox/data.csv", "Inbox/elsewhere.md"];
-		const { report } = await send(fold, store, state, changed(...paths));
+		const { report } = await send(fold, store, state, made(...paths));
 		expect(fold.writes).toEqual([]);
 		expect(report.done.sort()).toEqual([...paths].sort());
+	});
+
+	it("is never a file it does not hold that was only changed, not made here: one the vault came with, one left by a space it was disconnected from, or one Obsidian only rewrote on opening it", async () => {
+		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
+		store.put("inbox/came-with-the-vault.md", "# Someone else's text\n");
+		store.put("inbox/from-the-last-space.md", "# Another space's note\n");
+		const { report } = await send(fold, store, state, changed("inbox/came-with-the-vault.md", "inbox/from-the-last-space.md"), true);
+		expect(fold.writes).toEqual([]);
+		expect(report.done.sort()).toEqual(["inbox/came-with-the-vault.md", "inbox/from-the-last-space.md"]);
 	});
 
 	it("is not sent when a delete here is all that changed, and the note comes back from Fold", async () => {
@@ -955,25 +967,46 @@ describe("what goes back to Fold", () => {
 		expect(first.report.notSent).toEqual([{ path: "inbox/a.md", error: denied }]);
 		expect(first.report.done).toEqual(["inbox/a.md"]);
 		expect(first.state.refused["inbox/a.md"]).toBe(await sha256(new TextEncoder().encode("# Mine\n")));
-		const again = await send(fold, store, first.state, changed("inbox/a.md"));
+		// The outbox lets it go once it is done, so a timer's round offers nothing more.
+		const again = await send(fold, store, first.state, nothing);
 		expect(again.report.notSent).toEqual([]);
 		expect(fold.writes).toHaveLength(1);
-		store.put("inbox/a.md", "# Mine, changed\n");
-		await send(fold, store, again.state, changed("inbox/a.md"));
+		// A person asking tries it again, with nothing waiting in the outbox.
+		const asked = await send(fold, store, again.state, nothing, true);
 		expect(fold.writes).toHaveLength(2);
-		await send(fold, store, again.state, changed("inbox/a.md"), true);
+		expect(asked.report.notSent).toHaveLength(1);
+		// Changed again, it is offered again.
+		store.put("inbox/a.md", "# Mine, changed\n");
+		await send(fold, store, asked.state, changed("inbox/a.md"));
 		expect(fold.writes).toHaveLength(3);
 		// Taken in the end, it is no longer held back.
 		fold.writeRefusals.clear();
-		const taken = await send(fold, store, again.state, changed("inbox/a.md"), true);
+		const taken = await send(fold, store, asked.state, nothing, true);
 		expect(taken.report.sent).toEqual(["inbox/a.md"]);
 		expect(taken.state.refused).toEqual({});
+	});
+
+	it("refused as a new note, is tried again as one when a person asks, and forgotten once the file has gone", async () => {
+		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
+		store.put("inbox/mine.md", "# Mine\n");
+		fold.writeRefusals.set("inbox/mine.md", refusal("name-taken", 409));
+		const first = await send(fold, store, state, made("inbox/mine.md"));
+		expect(first.report.notSent.map((n) => n.path)).toEqual(["inbox/mine.md"]);
+		fold.writeRefusals.clear();
+		const asked = await send(fold, store, first.state, nothing, true);
+		expect(asked.report.added).toEqual(["inbox/mine.md"]);
+		store.put("inbox/gone.md", "# Gone\n");
+		fold.writeRefusals.set("inbox/gone.md", refusal("holds-credential"));
+		const refusedGone = await send(fold, store, asked.state, made("inbox/gone.md"));
+		store.files.delete("inbox/gone.md");
+		const after = await send(fold, store, refusedGone.state, nothing, true);
+		expect(after.state.refused).toEqual({});
 	});
 
 	it("is not sent when it is not UTF-8 text, since it would not arrive as it is", async () => {
 		const { fold, store, state } = await copied({ "inbox/a.md": "# A\n" });
 		store.files.set("inbox/odd.md", new Uint8Array([0x23, 0x20, 0xff, 0x0a]));
-		const { report } = await send(fold, store, state, changed("inbox/odd.md"));
+		const { report } = await send(fold, store, state, made("inbox/odd.md"));
 		expect(fold.writes).toEqual([]);
 		expect(report.notSent).toEqual([{ path: "inbox/odd.md", error: NOT_TEXT }]);
 	});

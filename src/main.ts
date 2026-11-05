@@ -3,7 +3,7 @@ import { MarkdownView, normalizePath, Notice, Plugin, requestUrl, type TAbstract
 import { type Addresses, foldClient, queryAddress, resolveAddresses } from "./fold";
 import { sha256 } from "./hash";
 import { isNote, localForm } from "./notes";
-import { type Connection, DEFAULT_INTERVAL_MINUTES, parseConnection, parseOutbox, parseSaved, type Saved } from "./saved";
+import { type Connection, DEFAULT_INTERVAL_MINUTES, type OutboxEntry, parseConnection, parseOutbox, parseSaved, type Saved } from "./saved";
 import { FoldSettingTab } from "./settings";
 import { NOTHING_YET, syncSpace } from "./sync";
 import { VaultStore } from "./vault-store";
@@ -21,8 +21,10 @@ const NO_NOTES = "Fold: this space has no notes to copy.";
 export default class FoldMemoryPlugin extends Plugin {
 	override settings: Saved = { intervalMinutes: DEFAULT_INTERVAL_MINUTES, sync: NOTHING_YET };
 	connection: Connection = { queryUrl: "", secretName: "", space: "", sendEdits: false };
-	/** What a person changed here while sending was on, by the vault's path, with when. */
-	outbox: Record<string, number> = {};
+	/** What a person changed here while sending was on, by the vault's path. */
+	outbox: Record<string, OutboxEntry> = {};
+	/** What a round wrote, by the vault's path, so the events its writes raise are not taken for a person's. */
+	private readonly ownWrites = new Map<string, Uint8Array>();
 	private found: { text: string; addresses: Addresses } | null = null;
 	private soon: number | null = null;
 	private saidNoControl = false;
@@ -50,15 +52,15 @@ export default class FoldMemoryPlugin extends Plugin {
 		});
 		this.app.workspace.onLayoutReady(() => {
 			// Only once the vault has loaded, since Obsidian reports every file as created while it loads.
-			this.registerEvent(this.app.vault.on("modify", (file) => void this.changedHere(file)));
-			this.registerEvent(this.app.vault.on("create", (file) => void this.changedHere(file)));
+			this.registerEvent(this.app.vault.on("modify", (file) => void this.changedHere(file, false)));
+			this.registerEvent(this.app.vault.on("create", (file) => void this.changedHere(file, true)));
 			this.registerEvent(
 				this.app.vault.on("rename", (file, oldPath) => {
 					if (this.outbox[oldPath] !== undefined) {
 						delete this.outbox[oldPath];
 						this.saveOutbox();
 					}
-					void this.changedHere(file);
+					void this.changedHere(file, true);
 				}),
 			);
 			this.schedule();
@@ -115,13 +117,20 @@ export default class FoldMemoryPlugin extends Plugin {
 		return addresses;
 	}
 
-	/** A note a person changed. The plugin's own copies raise the same events, so a file still holding what Fold gave is not a change. */
-	private async changedHere(file: TAbstractFile): Promise<void> {
+	/**
+	 * A note a person changed, or `created` here. The plugin's own copies raise the same events, so a file holding what this round wrote, or what Fold gave, is not a change. A file the plugin does not hold counts only once it was made here: one already in the vault, or left by a space this vault was disconnected from, or that Obsidian only rewrote on opening it, never becomes a new note.
+	 */
+	private async changedHere(file: TAbstractFile, created: boolean): Promise<void> {
 		if (!this.connection.sendEdits || !(file instanceof TFile) || !isNote(file.path)) return;
+		const bytes = new Uint8Array(await this.app.vault.readBinary(file));
+		const ours = this.ownWrites.get(file.path);
+		if (ours !== undefined && ours.length === bytes.length && ours.every((byte, at) => byte === bytes[at])) return;
 		const { files } = this.settings.sync;
 		const held = Object.keys(files).find((path) => localForm(path) === file.path);
-		if (held !== undefined && (await sha256(new Uint8Array(await this.app.vault.readBinary(file)))) === files[held]) return;
-		this.outbox[file.path] = Date.now();
+		if (held !== undefined && (await sha256(bytes)) === files[held]) return;
+		const before = this.outbox[file.path];
+		if (held === undefined && !created && !before?.created) return;
+		this.outbox[file.path] = { at: Date.now(), created: created || (before?.created ?? false) };
 		this.saveOutbox();
 		if (this.soon !== null) window.clearTimeout(this.soon);
 		this.soon = window.setTimeout(() => {
@@ -169,9 +178,11 @@ export default class FoldMemoryPlugin extends Plugin {
 				new Notice("Fold: to send your edits, enter the web app's address in this plugin's settings. Until then, notes are only copied.");
 				this.saidNoControl = true;
 			}
-			const changed = { ...this.outbox };
-			const outgoing = sendEdits && addresses.control ? { changed, quietSince: asked ? Date.now() : Date.now() - QUIET_MS } : undefined;
-			const { state, report } = await syncSpace(client, new VaultStore(this.app), mine, {
+			const changed = Object.fromEntries(Object.entries(this.outbox).map(([path, entry]) => [path, entry.at]));
+			const created = new Set(Object.entries(this.outbox).filter(([, entry]) => entry.created).map(([path]) => path));
+			const outgoing = sendEdits && addresses.control ? { changed, created, quietSince: asked ? Date.now() : Date.now() - QUIET_MS } : undefined;
+			const store = new VaultStore(this.app, (path, bytes) => this.ownWrites.set(path, bytes));
+			const { state, report } = await syncSpace(client, store, mine, {
 				space,
 				force: asked,
 				...(outgoing ? { outgoing } : {}),
@@ -189,7 +200,7 @@ export default class FoldMemoryPlugin extends Plugin {
 			}
 			// A path changed again during the round is offered again.
 			if (report.done.length > 0) {
-				for (const path of report.done) if (this.outbox[path] === changed[path]) delete this.outbox[path];
+				for (const path of report.done) if (this.outbox[path]?.at === changed[path]) delete this.outbox[path];
 				this.saveOutbox();
 			}
 			this.settings.sync = mine = state;
@@ -212,6 +223,10 @@ export default class FoldMemoryPlugin extends Plugin {
 			this.sayProblem(error, asked);
 		} finally {
 			this.running = false;
+			// The events a round's writes raise have come by now; what it wrote need not be held.
+			window.setTimeout(() => {
+				if (!this.running) this.ownWrites.clear();
+			}, 5_000);
 		}
 	}
 

@@ -3,7 +3,11 @@ import { type App, normalizePath, TFile, TFolder } from "obsidian";
 import type { Store } from "./sync";
 
 export class VaultStore implements Store {
-	constructor(private readonly app: App) {}
+	/** `written` hears each write before it is made, so the plugin can tell its own writes from a person's. */
+	constructor(
+		private readonly app: App,
+		private readonly written?: (path: string, bytes: Uint8Array) => void,
+	) {}
 
 	private file(path: string): TFile | null {
 		const found = this.app.vault.getAbstractFileByPath(normalizePath(path));
@@ -21,6 +25,7 @@ export class VaultStore implements Store {
 
 	async write(path: string, bytes: Uint8Array): Promise<void> {
 		const target = normalizePath(path);
+		this.written?.(target, bytes);
 		const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 		const file = this.file(target);
 		if (file) {

@@ -2,6 +2,8 @@
  * Fold's HTTP API as the web app reads it: the table in planning/memory-spaces-first/README.md, which the spaces lane owns, and the search and read answers fold-query serves (crates/fold-search/src/lib.rs and crates/fold-query/src/read.rs). A change there is posted in that round's LOG.md first and lands here. The mock in ui/mock/api.ts implements these same types, so the two cannot drift apart silently.
  */
 
+import type { SkillName } from "./skills.ts";
+
 /** A person's level on a space (section 06), lowest first. */
 export const ACCESS_LEVELS = ["read", "contribute", "edit", "admin"] as const;
 export type Access = (typeof ACCESS_LEVELS)[number];
@@ -49,6 +51,12 @@ export interface SpaceCreated {
 	revision: string;
 }
 
+/** `DELETE /v1/spaces/{space}`, control part, admin, a person only, with `{ confirm }` repeating the space's id: 202 once the space is gone from Fold, with 1p-platform's forgetting of it done or queued. Its data is erased in steps after that, and a 503 or 500 means asking again finishes it. */
+export interface SpaceDeleting {
+	id: string;
+	state: "deleting";
+}
+
 /** `GET /v1/spaces/{space}`, query part (LOG.md 15:25, item 5). `revision` is the latest written, `servedRevision` the one search and read serve; the space is `indexing` until they match. Revisions are decimal strings. */
 export type SpaceState = "ready" | "indexing";
 export interface SpaceStatus {
@@ -66,6 +74,46 @@ export interface SpaceStatus {
 	indexingStuck?: string;
 	/** Originals on their way in, and those that could not come, newest first; left out when there are none, or for someone who only reads. */
 	conversions?: Conversion[];
+	/** A repository's space: where it syncs from and what its last sync did (fold-query's `SyncView`). Only such a space has one. */
+	sync?: SyncView;
+}
+
+/** What a status says of a repository's sync. */
+export interface SyncView {
+	provider: "github";
+	/** `owner/name`. */
+	repository: string;
+	branch: string;
+	/** Whether an admin has connected the space through Fold's GitHub App: it is then read through the App's installation, private or not, and hears each push. */
+	connected: boolean;
+	state: "never" | "synced" | "catching-up" | "failed";
+	commit?: string;
+	syncedAt?: string;
+	failure?: { code: string; detail: string; at: string };
+	skippedCount: number;
+}
+
+/** `POST /v1/spaces/{space}/github/connect`, control part, an admin's: GitHub's two pages, each carrying a `state` that is this person's and this space's for half an hour. */
+export interface GitHubLinks {
+	/** The App's installation page. */
+	installUrl: string;
+	/** Signing in to the App alone, for a repository it is already installed on. */
+	authorizeUrl: string;
+	expiresAt: string;
+}
+
+/** What GitHub sent the person back to `/github/setup` with, passed on to `POST /v1/github/setup`, control part. */
+export interface GitHubSetup {
+	state: string;
+	code?: string;
+	installationId?: number;
+	setupAction?: "install" | "update" | "request";
+}
+export interface GitHubConnected {
+	space: string;
+	repository: string;
+	/** `requested` when an owner of the repository's account must approve the installation first. */
+	state: "connected" | "requested";
 }
 
 /** An upload between its commit and its revision, or why it never got one (fold-query's `ConversionView`). */
@@ -92,6 +140,8 @@ export interface SpaceGuide {
 	access: Access;
 	/** Whether the space takes notes at all. */
 	memory: boolean;
+	/** The skill an agent follows to use the space, named rather than embedded, with its MCP resource. */
+	skill: { name: SkillName; resource: string };
 }
 
 /** `GET /v1/spaces/{space}/files?prefix=`, query part. */
@@ -228,6 +278,8 @@ export interface WriteFile {
 	ifRevision?: string;
 	/** Stores a note the API just warned holds a likely credential. */
 	confirm?: boolean;
+	/** Keeps no previous version: what the file held goes for good, with no undo. Needs edit. */
+	scrub?: boolean;
 }
 /** `POST /v1/spaces/{space}/restore/{path}`, at edit: puts back the file's previous version, or a deleted file's last, as an ordinary write. */
 export interface RestoreFile {
@@ -426,6 +478,8 @@ export interface SleepView {
 
 /** Guidance files: written for agents and people, read through the guide or directly at the latest revision, and never indexed, so the file list always marks them `indexed: false` (LOG.md 15:25, items 6 and 7). */
 export const GUIDANCE_FILES: ReadonlySet<string> = new Set(["PURPOSE.md", "OVERVIEW.md", "SAVING.md", "SLEEP.md", "DREAMS.md"]);
+/** Sleep's tracker: sleep and evolve write it, and an admin may only scrub whole lines out of it (decided 5 November, "An admin may scrub DREAMS.md"). */
+export const DREAMS_FILE = "DREAMS.md";
 /** The guidance files a space cannot lose (LOG.md 15:25, item 9). */
 export const UNDELETABLE_FILES: ReadonlySet<string> = new Set(["PURPOSE.md", "OVERVIEW.md", "SAVING.md"]);
 
@@ -434,7 +488,7 @@ export function needsMemory(path: string): boolean {
 	return path.startsWith("inbox/") || path.startsWith("managed/") || path === "SAVING.md" || path === "SLEEP.md" || path === "DREAMS.md";
 }
 
-/** Notes sleep keeps: nobody writes them through the API, at any level, and only an admin deletes one (decided 3 November, "A memory space has three folders"). */
+/** Notes sleep files and keeps in order. Anyone with edit changes, deletes or restores one like any file (decided 4 November, "Editors may change any file"); adding memory still goes through the inbox. */
 export function isManaged(path: string): boolean {
 	return path.startsWith("managed/");
 }

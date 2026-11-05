@@ -66,7 +66,8 @@ vi.mock("./settings", () => ({
 }));
 vi.mock("./vault-store", () => ({
 	VaultStore: class {
-		constructor() {
+		constructor(_app: unknown, written?: (path: string, bytes: Uint8Array) => void) {
+			(stub.store as MemoryStore).written = written;
 			// biome-ignore lint/correctness/noConstructorReturn: a test's stand-in
 			return stub.store as Store;
 		}
@@ -294,7 +295,8 @@ describe("what goes wrong", () => {
 describe("what a person changes, with sending on", () => {
 	const sending = { ...connection, sendEdits: true };
 	/** What Obsidian reports when a file changes, as the plugin hears it. */
-	const changed = (plugin: unknown, path: string) => (plugin as { changedHere(file: unknown): Promise<void> }).changedHere(new (TFile as unknown as new (path: string) => unknown)(path));
+	/** What Obsidian reports when a file changes, or is `created` here, as the plugin hears it. */
+	const changed = (plugin: unknown, path: string, created = false) => (plugin as { changedHere(file: unknown, created: boolean): Promise<void> }).changedHere(new (TFile as unknown as new (path: string) => unknown)(path), created);
 
 	it("is kept on this device until it is sent, and the plugin's own copies are not taken for changes", async () => {
 		const { plugin, store, api, local } = setup({ connection: sending, webApp: true });
@@ -322,7 +324,7 @@ describe("what a person changes, with sending on", () => {
 		await changed(plugin, "inbox/a.md");
 		await plugin.syncNow(false);
 		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a\n");
-		plugin.outbox["inbox/a.md"] = Date.now() - 2 * QUIET_MS;
+		plugin.outbox["inbox/a.md"] = { at: Date.now() - 2 * QUIET_MS, created: false };
 		await plugin.syncNow(false);
 		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a, being written\n");
 	});
@@ -353,13 +355,37 @@ describe("what a person changes, with sending on", () => {
 	it("is forgotten when sending is turned on, so nothing from before is sent, and when the vault is disconnected", async () => {
 		const { plugin, folders } = setup({ connection: sending, webApp: true });
 		await plugin.onload();
-		plugin.outbox = { "inbox/old.md": 1 };
+		plugin.outbox = { "inbox/old.md": { at: 1, created: true } };
 		plugin.setSending(true);
 		expect(plugin.outbox).toEqual({});
 		// And the vault has an inbox to write a new note in.
 		await vi.waitFor(() => expect(folders.has("inbox")).toBe(true));
-		plugin.outbox = { "inbox/a.md": 1 };
+		plugin.outbox = { "inbox/a.md": { at: 1, created: false } };
 		plugin.clearOutbox();
+		expect(plugin.outbox).toEqual({});
+	});
+
+	it("counts a file it does not hold only once it was made here, never one Obsidian only rewrote", async () => {
+		const { plugin, store } = setup({ connection: sending, webApp: true });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		store.put("inbox/came-with-the-vault.md", "# Someone else's\n");
+		await changed(plugin, "inbox/came-with-the-vault.md");
+		expect(plugin.outbox).toEqual({});
+		store.put("inbox/mine.md", "# Mine\n");
+		await changed(plugin, "inbox/mine.md", true);
+		await changed(plugin, "inbox/mine.md");
+		expect(plugin.outbox["inbox/mine.md"]?.created).toBe(true);
+	});
+
+	it("never takes what a round wrote for a person's change, though the saved state has yet to hold it", async () => {
+		const { plugin } = setup({ connection: sending, webApp: true });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		// As during a round, before its state is saved.
+		plugin.settings.sync = { space: null, revision: null, files: {}, opened: {}, refused: {} };
+		await changed(plugin, "managed/b.md", true);
+		await changed(plugin, "inbox/a.md");
 		expect(plugin.outbox).toEqual({});
 	});
 });

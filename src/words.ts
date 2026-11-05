@@ -21,7 +21,7 @@ export function describeNotSent(error: unknown): string {
 	switch (errorCode(error)) {
 		case "not-permitted":
 		case "forbidden":
-			// Fold's own reason says which: the token's scope, the person's access, or a folder only sleep writes.
+			// Fold's own reason says which: the token's scope, the person's access, or a file only Fold writes.
 			return error instanceof ApiError && error.detail ? `Fold refused it: ${error.detail.replace(/\.$/, "")}` : "sending needs a token with the fold:write scope, and edit access to this space, or contribute access for a new note";
 		case "holds-credential":
 			return "Fold thinks it holds a credential, such as a key or a password. Take it out, and it is sent when you next change it";

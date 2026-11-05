@@ -3,9 +3,11 @@
  *
  * What it models, as the README says: a write makes a new revision and the space answers `indexing` until the pointer moves; reads and search serve the indexed revision; the file list shows the newest one, each file marked indexed or not. Search is word overlap, enough to show the shape of an agent's results.
  */
+import { SKILLS, type SkillName, skillFor, skillResource } from "./skills.ts";
 import {
 	type Access,
 	type ApiErrorBody,
+	DREAMS_FILE,
 	GUIDANCE_FILES,
 	type CommitUpload,
 	type Conversion,
@@ -33,12 +35,14 @@ import {
 	type SearchHit,
 	type SearchResults,
 	type SpaceCreated,
+	type SpaceDeleting,
 	type SpaceGuide,
 	type SpaceList,
 	type SleepSettings,
 	type SleepView,
 	type SpaceSettings,
 	type SpaceStatus,
+	type SyncView,
 	type UploadLink,
 	isManaged,
 	needsMemory,
@@ -75,6 +79,8 @@ interface MockSpace {
 	uploads: Map<string, { bytes: number; sha256: string; sent?: Uint8Array }>;
 	/** The revision a re-index was last asked for at, which every later revision carries (fold-store's `Revision.reindex`). */
 	reindex?: string;
+	/** A repository's space's sync, as its status says it. */
+	sync?: SyncView;
 }
 
 /** A conversion, and when it finishes, with what it finds. */
@@ -104,6 +110,8 @@ export interface MockApiOptions {
 	convertDelayMs?: number;
 	/** Where upload links lead, which the dev server serves. */
 	uploadsUrl?: string;
+	/** The skills' text, which the dev server reads from skills/. A skill left out answers not-found. */
+	skills?: Partial<Record<SkillName, string>>;
 }
 
 export interface SeedSpace {
@@ -115,7 +123,12 @@ export interface SeedSpace {
 	sleep?: Partial<Omit<SleepView, "waiting">>;
 	/** The `memory` switch; on unless this says otherwise. */
 	memory?: boolean;
+	/** A repository's space: what it syncs, whether it is connected through the GitHub App, and why its last sync failed. */
+	repository?: { name: string; branch: string; connected?: boolean; failure?: { code: string; detail: string } };
 }
+
+/** The GitHub App's pages in the mock, as the control part builds them. */
+export const MOCK_GITHUB_APP = "https://github.com/apps/fold-test";
 
 export interface MockApi {
 	/** One request in, one response out, for paths under the API's base (`/v1/...`). */
@@ -148,6 +161,8 @@ const READ_PARAMETERS = ["lineStart", "lineEnd", "revision", "original"];
 const MAX_LINE_NUMBER = 4_294_967_295;
 /** A file's text is at most 1 MiB this round (LOG.md 15:25, item 2). */
 const MAX_FILE_BYTES = 1024 * 1024;
+/** A managed note is at most 150 KB, the most sleep takes as a note (fold-store's MAX_NOTE_BYTES, which fold-door's check holds every write to). */
+export const MAX_NOTE_BYTES = 150 * 1024;
 /** The most characters one line may hold (fold-control's MAX_LINE_CHARS). */
 const MAX_LINE_CHARS = 4_000;
 /** Sleep's starting defaults (fold-store's SleepSettings). */
@@ -295,9 +310,42 @@ export function seedSpaces(): SeedSpace[] {
 	];
 }
 
-/** Where a write may go, as fold-control's door says. */
+/** Where a write may go, as fold-control's door says: a managed note is changed at edit like any file (decided 4 November, "Editors may change any file"). */
 function writable(path: string): boolean {
-	return GUIDANCE_FILES.has(path) || path.startsWith("inbox/") || path.startsWith("reference/");
+	return (GUIDANCE_FILES.has(path) && path !== DREAMS_FILE) || path.startsWith("inbox/") || path.startsWith("managed/") || path.startsWith("reference/");
+}
+
+const NOT_WRITABLE = "a space's files are its guidance files at the root and everything under inbox/, managed/ and reference/";
+
+/** `before`'s own lines that `after` keeps, line endings included, when `after` is `before` with whole lines taken out in their order, as fold-door's `lines_left` says; null otherwise. */
+function linesLeft(before: string, after: string): string | null {
+	const old = before.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+	const wanted = after.split("\n").map((line) => line.replace(/\r$/, "")).filter((line, at, all) => at < all.length - 1 || line !== "");
+	let at = 0;
+	let left = "";
+	for (const line of wanted) {
+		while (at < old.length && old[at]?.replace(/\r?\n$/, "") !== line) at += 1;
+		if (at === old.length) return null;
+		left += old[at];
+		at += 1;
+	}
+	return left;
+}
+
+/** What a guide names of its skill, as fold-query's `GuideSkill` does. */
+function guideSkill(name: SkillName): SpaceGuide["skill"] {
+	return { name, resource: skillResource(name) };
+}
+
+const SKILL_PATH = "/v1/skills/";
+
+/** `GET /v1/skills/{name}`, to anyone, as the query part answers it: the name matched exactly, never decoded into a path. */
+function skillAnswer(request: Request, name: string, texts: MockApiOptions["skills"]): Response {
+	if (request.method !== "GET") return refuse(400, "bad-request", "that method is not one this route takes");
+	const skill = SKILLS.find((known) => known.name === name);
+	const text = skill ? texts?.[skill.name] : undefined;
+	if (text === undefined) return refuse(404, "not-found", "Fold serves no skill of that name");
+	return new Response(text, { status: 200, headers: { "content-type": "text/markdown; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "public, max-age=3600" } });
 }
 
 function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -473,7 +521,20 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 			previous: new Map(),
 			deleted: new Map(),
 			sleep: { settings: { ...SLEEP_DEFAULTS }, runs: [], setAside: [], evolutions: [], nominations: [], ...seed.sleep },
-			memory: seed.memory ?? true,
+			memory: seed.repository ? false : (seed.memory ?? true),
+			...(seed.repository
+				? {
+						sync: {
+							provider: "github",
+							repository: seed.repository.name,
+							branch: seed.repository.branch,
+							connected: seed.repository.connected ?? false,
+							state: seed.repository.failure ? "failed" : "never",
+							...(seed.repository.failure ? { failure: { ...seed.repository.failure, at: SEEDED_AT } } : {}),
+							skippedCount: 0,
+						} satisfies SyncView,
+					}
+				: {}),
 			served: id,
 			indexedAt: 0,
 			decay: true,
@@ -541,7 +602,31 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 		...(reaches(space.access, "contribute") && space.conversions.size > 0
 			? { conversions: [...space.conversions.values()].map(({ path, state, reason, detail, at }) => ({ path, state, ...(reason ? { reason } : {}), ...(detail ? { detail } : {}), at })) }
 			: {}),
+		...(space.sync ? { sync: space.sync } : {}),
 	});
+
+	/** Each connection's `state`, whose it is for, and until when, taken once (fold-control's setup.rs). */
+	const connects = new Map<string, { space: string; expires: number }>();
+
+	/** `POST /v1/github/setup`: the `state` taken once, and the space connected. The mock stands for GitHub's checks with one rule: a code of `refused` is one GitHub does not take. */
+	async function finishSetup(request: Request): Promise<Response> {
+		if (request.method !== "POST") return refuse(400, "bad-request", "that method is not one this route takes");
+		const raw = (await readJson(request)) as Record<string, unknown> | undefined;
+		const known = ["state", "code", "installationId", "setupAction"];
+		if (typeof raw !== "object" || raw === null || typeof raw.state !== "string" || !Object.keys(raw).every((key) => known.includes(key))) {
+			return refuse(400, "bad-request", "the body is { state, code?, installationId?, setupAction? }, as GitHub sent them back");
+		}
+		const pending = connects.get(raw.state);
+		connects.delete(raw.state);
+		if (!pending || pending.expires < now()) return refuse(400, "bad-request", "this connection has expired or was already used: start again from the space's settings");
+		const space = spaces.get(pending.space);
+		if (!space?.sync || !reaches(space.access, "admin")) return notFound();
+		if (raw.setupAction === "request") return json(200, { space: space.id, repository: space.sync.repository, state: "requested" });
+		if (raw.code === "refused") return refuse(403, "not-permitted", "GitHub did not accept the code, which lasts ten minutes: start again from the space's settings");
+		const { failure: _failure, ...rest } = space.sync;
+		space.sync = { ...rest, connected: true, state: "never" };
+		return json(200, { space: space.id, repository: space.sync.repository, state: "connected" });
+	}
 
 	async function readJson(request: Request): Promise<unknown> {
 		try {
@@ -564,12 +649,16 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 
 	async function route(request: Request): Promise<Response> {
 		if (request.url.startsWith(uploadsUrl)) return store(request);
+		// A skill holds no space's data, so it is answered before any credential is looked at.
+		const pathname = new URL(request.url).pathname;
+		if (pathname.startsWith(SKILL_PATH)) return skillAnswer(request, pathname.slice(SKILL_PATH.length), options.skills);
 		const auth = request.headers.get("authorization") ?? "";
 		if (!/^Bearer \S+$/.test(auth)) return refuse(401, "unauthorised", "the credential was refused");
 
 		const url = new URL(request.url);
 		const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
 		const method = request.method;
+		if (parts.length === 3 && parts[0] === "v1" && parts[1] === "github" && parts[2] === "setup") return finishSetup(request);
 		if (parts[0] !== "v1" || parts[1] !== "spaces") return notFound();
 
 		// /v1/spaces
@@ -641,6 +730,19 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 
 		if (tail.length === 0 && method === "GET") return json(200, status(space));
 
+		// The whole space, as fold-control's delete_space.rs takes it: an object holding the space's id and nothing else, then admin, then gone at once.
+		if (tail.length === 0 && method === "DELETE") {
+			if ([...url.searchParams.keys()].length > 0) return refuse(400, "bad-request", "an unknown query parameter");
+			const raw = await readJson(request);
+			if (typeof raw !== "object" || raw === null || Array.isArray(raw) || Object.keys(raw).join() !== "confirm" || typeof (raw as { confirm: unknown }).confirm !== "string") {
+				return refuse(400, "bad-request", "the body must be { confirm }, the space's id, and nothing else");
+			}
+			if ((raw as { confirm: string }).confirm !== space.id) return refuse(400, "bad-request", "confirm must be the space's id exactly, so a stray call deletes nothing");
+			if (!reaches(space.access, "admin")) return refuse(403, "not-permitted", "deleting a space needs admin access to it");
+			spaces.delete(space.id);
+			return json(202, { id: space.id, state: "deleting" } satisfies SpaceDeleting);
+		}
+
 		if (tail[0] === "guide" && tail.length === 1 && method === "GET") {
 			const files = served(space)?.files ?? head(space).files;
 			return json(200, {
@@ -648,6 +750,7 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 				saving: files.get("SAVING.md") ?? "",
 				access: space.access,
 				memory: space.memory,
+				skill: guideSkill(skillFor(Boolean(space.sync))),
 			} satisfies SpaceGuide);
 		}
 
@@ -710,6 +813,22 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 			space.decay = body.decay ?? space.decay;
 			space.memory = body.memory ?? space.memory;
 			return json(200, { decay: space.decay, memory: space.memory } satisfies SpaceSettings);
+		}
+
+		if (tail[0] === "github" && tail[1] === "connect" && tail.length === 2) {
+			if (method !== "POST") return refuse(400, "bad-request", "that method is not one this route takes");
+			const sent = await request.text();
+			if (sent !== "" && sent !== "{}") return refuse(400, "bad-request", "connecting takes no body");
+			if (!reaches(space.access, "admin")) return refuse(403, "not-permitted", "connecting a repository needs admin access to the space");
+			if (!space.sync) return refuse(400, "bad-request", "this space syncs from no GitHub repository");
+			const state = [...crypto.getRandomValues(new Uint8Array(32))].map((b) => b.toString(16).padStart(2, "0")).join("");
+			const expires = now() + 30 * 60 * 1000;
+			connects.set(state, { space: space.id, expires });
+			return json(201, {
+				installUrl: `${MOCK_GITHUB_APP}/installations/new?state=${state}`,
+				authorizeUrl: `https://github.com/login/oauth/authorize?client_id=Iv23liTest&state=${state}`,
+				expiresAt: new Date(expires).toISOString(),
+			});
 		}
 
 		if (tail[0] === "reindex" && tail.length === 1) {
@@ -838,9 +957,8 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 			if (path.split("/").some((segment) => segment === ".." || segment === "." || segment === "")) {
 				return refuse(400, "bad-request", "the file path is not a path in a space");
 			}
-			if (isManaged(path)) return refuse(403, "not-permitted", "sleep alone writes managed notes: to correct one, save a note to the inbox and sleep files the correction");
 			if (originalOfText(path) !== null) return refuse(403, "not-permitted", TEXT_IS_FOLDS);
-			if (!writable(path)) return refuse(400, "bad-request", "a space's files are its guidance files at the root and everything under inbox/ and reference/");
+			if (!writable(path)) return refuse(400, "bad-request", NOT_WRITABLE);
 			if (!reaches(space.access, "edit")) return forbidden("edit");
 			if (!space.memory && needsMemory(path)) return refuse(409, "memory-off", NO_NOTES);
 			const body = strictBody<RestoreFile>((await request.clone().text()) ? await readJson(request) : {}, [], ["ifRevision"], ["confirm"]);
@@ -857,7 +975,7 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 				return json(202, { path, state: "converting" } satisfies Converting);
 			}
 			if (current === undefined && left?.filed && !reaches(space.access, "admin")) return refuse(403, "not-permitted", "only an admin can bring back a note sleep has filed");
-			if (!body.confirm && path.startsWith("inbox/") && LIKELY_CREDENTIAL.test(version)) return refuse(400, "holds-credential", HOLDS_CREDENTIAL);
+			if (!body.confirm && (path.startsWith("inbox/") || isManaged(path)) && LIKELY_CREDENTIAL.test(version)) return refuse(400, "holds-credential", HOLDS_CREDENTIAL);
 			if (body.ifRevision !== undefined) {
 				const then = space.revisions.find((revision) => revision.id === body.ifRevision);
 				if (!then || then.files.get(path) !== current) return refuse(409, "changed", "the file changed after that revision");
@@ -956,22 +1074,38 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 				} satisfies FileText);
 			}
 			if (method === "PUT") {
-				// Nobody writes to managed/, at any level; a guidance file at the root, or anything under inbox/ or reference/; a new note or document needs contribute, anything else edit.
-				if (isManaged(path)) return refuse(403, "not-permitted", "sleep alone writes managed notes: to correct one, save a note to the inbox and sleep files the correction");
+				// A guidance file at the root, or anything under inbox/, managed/ or reference/; a new note or document in inbox/ or reference/ needs contribute, anything else edit, and so does a scrub.
 				if (originalOfText(path) !== null) return refuse(403, "not-permitted", TEXT_IS_FOLDS);
-				if (!writable(path)) return refuse(400, "bad-request", "a space's files are its guidance files at the root and everything under inbox/ and reference/");
-				if (!space.memory && needsMemory(path)) return refuse(409, "memory-off", NO_NOTES);
-				if (path.startsWith("inbox/") && /\.(pdf|docx|pptx)$/i.test(path)) {
-					return refuse(415, "unsupported-type", "the inbox holds only notes: an original (PDF, Word or PowerPoint) goes to reference/");
+				const dreams = path === DREAMS_FILE;
+				if (!dreams && !writable(path)) return refuse(400, "bad-request", NOT_WRITABLE);
+				// Memory off keeps sleep's tracker readable, and an admin may still scrub it.
+				if (!space.memory && needsMemory(path) && !dreams) return refuse(409, "memory-off", NO_NOTES);
+				if ((path.startsWith("inbox/") || isManaged(path)) && /\.(pdf|docx|pptx)$/i.test(path)) {
+					return refuse(415, "unsupported-type", "the inbox holds only notes and managed/ only what sleep files: an original (PDF, Word or PowerPoint) goes to reference/");
 				}
-				const isNew = !head(space).files.has(path) && /^(inbox|reference)\//.test(path);
+				const body = strictBody<WriteFile>(await readJson(request), ["text"], ["ifRevision"], ["confirm", "scrub"]);
+				if (!body) return refuse(400, "bad-request", "the body must be { text, ifRevision?, confirm?, scrub? } and nothing else");
+				if (body.scrub && body.ifRevision === undefined) return refuse(400, "bad-request", "a scrub names the revision you read the file at, ifRevision, so it never drops a version you have not seen");
+				// Sleep's tracker takes an admin's scrub alone, and only whole lines out of it, as fold-door's `put_level` and `lines_left` say: read again first if it changed since, and stored as its own lines.
+				if (dreams) {
+					if (!body.scrub) return refuse(400, "bad-request", "DREAMS.md is written by sleep alone: an admin may only take whole lines out of it, with scrub: true");
+					if (!reaches(space.access, "admin")) return refuse(403, "not-permitted", "only an admin can scrub DREAMS.md, sleep's tracker, which nobody else writes");
+					const then = space.revisions.find((revision) => revision.id === body.ifRevision);
+					if (!then || then.files.get(path) !== head(space).files.get(path)) return refuse(409, "changed", "the file changed after that revision");
+					const current = head(space).files.get(path);
+					if (current === undefined) return refuse(404, "file-not-found", "the space has no file at that path");
+					const left = linesLeft(current, body.text);
+					if (left === null) return refuse(400, "bad-request", "a scrub of DREAMS.md only takes whole lines out: what is left must be its lines as they stand, in their order");
+					body.text = left;
+				}
+				const isNew = !head(space).files.has(path) && /^(inbox|reference)\//.test(path) && !body.scrub;
 				if (!reaches(space.access, isNew ? "contribute" : "edit")) return forbidden(isNew ? "contribute" : "edit");
-				const body = strictBody<WriteFile>(await readJson(request), ["text"], ["ifRevision"], ["confirm"]);
-				if (!body) return refuse(400, "bad-request", "the body must be { text, ifRevision? }");
-				if (new TextEncoder().encode(body.text).length > MAX_FILE_BYTES) return refuse(413, "too-large", "a file's text is at most 1 MiB");
+				const bytes = new TextEncoder().encode(body.text).length;
+				if (bytes > MAX_FILE_BYTES) return refuse(413, "too-large", "a file's text is at most 1 MiB");
+				if (isManaged(path) && bytes > MAX_NOTE_BYTES) return refuse(413, "too-large", "a managed note is at most 150 KB, the most sleep takes as a note: split it, or keep a long document in reference/");
 				const tooLong = longLine(body.text);
 				if (tooLong) return tooLong;
-				if (!body.confirm && path.startsWith("inbox/") && LIKELY_CREDENTIAL.test(body.text)) return refuse(400, "holds-credential", HOLDS_CREDENTIAL);
+				if (!body.confirm && (path.startsWith("inbox/") || isManaged(path)) && LIKELY_CREDENTIAL.test(body.text)) return refuse(400, "holds-credential", HOLDS_CREDENTIAL);
 				// Refused only when this file changed after the revision the writer read, so a person's own note saved a moment earlier does not refuse their next edit.
 				if (body.ifRevision !== undefined) {
 					const then = space.revisions.find((revision) => revision.id === body.ifRevision);
@@ -979,25 +1113,27 @@ export function createMockApi(options: MockApiOptions = {}): MockApi {
 						return refuse(409, "changed", "the file changed after that revision");
 					}
 				}
-				// The same text again changes nothing and answers the current revision.
-				if (head(space).files.get(path) === body.text) return json(200, { revision: head(space).id } satisfies Revised);
+				// The same text again changes nothing and answers the current revision, unless a scrub has a previous version to drop.
+				if (head(space).files.get(path) === body.text && !(body.scrub && space.previous.has(path))) return json(200, { revision: head(space).id } satisfies Revised);
+				// Every version the file held, before the commit makes its current one the previous.
+				const held = [head(space).files.get(path), space.previous.get(path), space.deleted.get(path)?.text].filter((text): text is string => text !== undefined && text !== body.text);
 				const revision = commit(space, (files) => files.set(path, body.text));
+				// A scrub keeps nothing of what the file held, and what another file keeps of the same text goes with it, as with a purge.
+				if (body.scrub) {
+					space.previous.delete(path);
+					for (const [other, text] of space.previous) if (held.includes(text)) space.previous.delete(other);
+					for (const [other, left] of space.deleted) if (held.includes(left.text)) space.deleted.delete(other);
+				}
 				return json(200, { revision } satisfies Revised);
 			}
 			if (method === "DELETE") {
 				if (originalOfText(path) !== null) return refuse(403, "not-permitted", TEXT_IS_FOLDS);
 				const asked = url.searchParams.get("purge");
 				if (asked !== null && asked !== "true" && asked !== "false") return refuse(400, "bad-request", "purge must be true or false");
-				const purge = asked === "true" || isManaged(path);
-				if (isManaged(path)) {
-					if (!reaches(space.access, "admin")) {
-						return refuse(403, "not-permitted", "only an admin can delete a managed note: to correct one, save a note to the inbox and sleep files the correction");
-					}
-				} else {
-					if (!writable(path)) return refuse(400, "bad-request", "a space's files are its guidance files at the root and everything under inbox/ and reference/");
-					if (purge && !reaches(space.access, "admin")) return refuse(403, "not-permitted", "only an admin can delete a file for good: an editor's delete keeps its last version for 30 days");
-					if (!reaches(space.access, "edit")) return forbidden("edit");
-				}
+				const purge = asked === "true";
+				if (!writable(path)) return refuse(400, "bad-request", NOT_WRITABLE);
+				if (purge && !reaches(space.access, "admin")) return refuse(403, "not-permitted", "only an admin can delete a file for good: an editor's delete keeps its last version for 30 days");
+				if (!reaches(space.access, "edit")) return forbidden("edit");
 				if (UNDELETABLE_FILES.has(path)) return refuse(400, "bad-request", "a space's guidance files are edited, never deleted");
 				const holds = head(space).files.has(path);
 				if (!holds && !(purge && space.deleted.has(path))) return refuse(404, "file-not-found", "the space has no file at that path");

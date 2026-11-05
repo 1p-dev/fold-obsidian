@@ -36,6 +36,8 @@ export type Source = Pick<ApiClient, "status" | "files" | "content" | "writeFile
 /** What a person changed in this vault while sending was on, each path with when it last changed. A round offers only what has been quiet since `quietSince`, so a note being written goes once it is finished. */
 export interface Outgoing {
 	changed: Readonly<Record<string, number>>;
+	/** The changed paths a person made here, by creating a file or renaming one to it. Only these can be new notes, so a file already in the vault, or one Obsidian only rewrote on opening it, is never sent as one. */
+	created: ReadonlySet<string>;
 	quietSince: number;
 }
 
@@ -131,12 +133,19 @@ export async function syncSpace(source: Source, store: Store, state: SyncState, 
 	const opened = { ...state.opened };
 	const refused = { ...state.refused };
 	const kept = (revision: string | null) => ({ state: { space: options.space, revision, files, opened, refused }, report });
-	// What changed here is named as the vault names it, which is a path's local form.
+	// What changed here is named as the vault names it, which is a path's local form. A person asking also tries again what Fold refused, whose change an earlier round dealt with.
 	const { outgoing } = options;
-	const changedHere = Object.entries(outgoing?.changed ?? {})
-		.filter(([, at]) => at <= (outgoing?.quietSince ?? 0))
-		.map(([path]) => path);
+	const retried = outgoing && options.force ? Object.keys(state.refused) : [];
+	const changedHere = [
+		...new Set([
+			...Object.entries(outgoing?.changed ?? {})
+				.filter(([, at]) => at <= outgoing!.quietSince)
+				.map(([path]) => path),
+			...retried,
+		]),
+	];
 	const dueForms = new Set(changedHere.map(localForm));
+	const createdForms = new Set([...(outgoing?.created ?? []), ...retried].map(localForm));
 	const due = (path: string) => dueForms.has(localForm(path));
 
 	/** Records a note as held, with the form Obsidian will leave it in. */
@@ -267,10 +276,12 @@ export async function syncSpace(source: Source, store: Store, state: SyncState, 
 	const heldHashes = new Set([...notes.map((file) => file.hash ?? ""), ...Object.values(files)]);
 	const knownForms = new Set([...listed, ...Object.keys(files)].map(localForm));
 	for (const path of changedHere) {
-		if (knownForms.has(localForm(path)) || !path.startsWith("inbox/") || !isNote(path) || !isSafe(path) || isEditCopy(path)) continue;
+		if (!createdForms.has(localForm(path)) || knownForms.has(localForm(path)) || !path.startsWith("inbox/") || !isNote(path) || !isSafe(path) || isEditCopy(path)) continue;
 		try {
 			const local = await store.read(path);
-			if (local !== null && !heldHashes.has(await sha256(local))) toSend.push({ path, local, isNew: true });
+			// A refused note that has gone has nothing left to send.
+			if (local === null) delete refused[path];
+			else if (!heldHashes.has(await sha256(local))) toSend.push({ path, local, isNew: true });
 		} catch {
 			keep.add(localForm(path));
 		}

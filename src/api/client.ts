@@ -6,6 +6,9 @@ import {
 	type FileContent,
 	type FileList,
 	type FileText,
+	type GitHubConnected,
+	type GitHubLinks,
+	type GitHubSetup,
 	HASH_HEADER,
 	type NewNote,
 	type NewUpload,
@@ -19,6 +22,7 @@ import {
 	type SleepSettings,
 	type SleepView,
 	type SpaceCreated,
+	type SpaceDeleting,
 	type SpaceGuide,
 	type SpaceList,
 	type SpaceSettings,
@@ -111,6 +115,8 @@ export function createApiClient(options: ApiClientOptions) {
 	return {
 		listSpaces: () => query<SpaceList>("GET", "/v1/spaces"),
 		createSpace: (body: CreateSpace) => control<SpaceCreated>("POST", "/v1/spaces", body),
+		/** The whole space, at admin: `confirm` is its id, typed again, so a stray call deletes nothing. */
+		deleteSpace: (id: string, confirm: string) => control<SpaceDeleting>("DELETE", space(id), { confirm }),
 		status: (id: string) => query<SpaceStatus>("GET", space(id)),
 		guide: (id: string) => query<SpaceGuide>("GET", `${space(id)}/guide`),
 		files: (id: string, prefix?: string) =>
@@ -140,6 +146,8 @@ export function createApiClient(options: ApiClientOptions) {
 		setSettings: (id: string, settings: Partial<SpaceSettings>) => control<SpaceSettings>("PUT", `${space(id)}/settings`, settings),
 		/** Every file of the space read again, at admin: answers the revision whose job does it, and the space says indexing until it is served. */
 		reindex: (id: string) => control<Revised>("POST", `${space(id)}/reindex`),
+		connectGitHub: (id: string) => control<GitHubLinks>("POST", `${space(id)}/github/connect`),
+		finishGitHubSetup: (body: GitHubSetup) => control<GitHubConnected>("POST", "/v1/github/setup", body),
 		saveNote: (id: string, body: NewNote) => control<NoteSaved>("POST", `${space(id)}/notes`, body),
 		writeFile: (id: string, path: string, body: WriteFile) => control<Revised>("PUT", `${space(id)}/files/${filePath(path)}`, body),
 		/** `ifRevision` refuses the delete with `changed` when the file changed after that revision (spaces lane, LOG.md 15:45). `purge`, at admin, takes both versions at once, with no way back. */

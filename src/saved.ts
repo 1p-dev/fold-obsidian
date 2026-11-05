@@ -55,8 +55,19 @@ export function parseConnection(data: unknown): Connection {
 	};
 }
 
-/** What a person changed in this vault while sending was on, by path, with when, kept on this device until it is sent. */
-export function parseOutbox(data: unknown): Record<string, number> {
+/** A change a person made here: when it last changed, and whether they made the file here, which only then can be a new note. */
+export interface OutboxEntry {
+	at: number;
+	created: boolean;
+}
+
+/** What a person changed in this vault while sending was on, by path, kept on this device until it is sent. 0.2.0 kept only when, and such an entry is taken as an edit, never a new note. */
+export function parseOutbox(data: unknown): Record<string, OutboxEntry> {
 	if (!isRecord(data)) return {};
-	return Object.fromEntries(Object.entries(data).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
+	const entries: [string, OutboxEntry][] = [];
+	for (const [path, value] of Object.entries(data)) {
+		if (typeof value === "number" && Number.isFinite(value)) entries.push([path, { at: value, created: false }]);
+		else if (isRecord(value) && typeof value.at === "number" && Number.isFinite(value.at)) entries.push([path, { at: value.at, created: value.created === true }]);
+	}
+	return Object.fromEntries(entries);
 }
