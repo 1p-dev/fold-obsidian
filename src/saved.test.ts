@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_INTERVAL_MINUTES, parseConnection, parseSaved } from "./saved";
+import { DEFAULT_INTERVAL_MINUTES, parseConnection, parseOutbox, parseSaved } from "./saved";
 import { NOTHING_YET } from "./sync";
 
 describe("what a vault's saved data can say", () => {
 	it("is read when it is well formed", () => {
-		const sync = { space: "s", revision: "3", files: { "inbox/a.md": "abc" }, opened: { "inbox/a.md": "def" } };
+		const sync = { space: "s", revision: "3", files: { "inbox/a.md": "abc" }, opened: { "inbox/a.md": "def" }, refused: { "inbox/b.md": "ghi" } };
 		expect(parseSaved({ intervalMinutes: 15, sync })).toEqual({ intervalMinutes: 15, sync });
+	});
+
+	it("reads a state saved before refusals were kept, and forgets a refusal it cannot read, since one only ever holds a note back", () => {
+		expect(parseSaved({ sync: { space: "s", revision: "3", files: {}, opened: {} } }).sync.refused).toEqual({});
+		expect(parseSaved({ sync: { space: "s", revision: "3", files: {}, opened: {}, refused: { "inbox/a.md": 1, "inbox/b.md": "ghi" } } }).sync.refused).toEqual({ "inbox/b.md": "ghi" });
 	});
 
 	it("never includes what a token is used for, whatever the file holds", () => {
@@ -30,7 +35,18 @@ describe("what a vault's saved data can say", () => {
 
 describe("the connection", () => {
 	it("is read from this device's storage, and is empty when it is not there or not in shape", () => {
-		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s" })).toEqual({ queryUrl: "https://q", secretName: "n", space: "s" });
-		for (const nothing of [null, undefined, "x", [], { queryUrl: 1, secretName: {}, space: [] }]) expect(parseConnection(nothing)).toEqual({ queryUrl: "", secretName: "", space: "" });
+		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true })).toEqual({ queryUrl: "https://q", secretName: "n", space: "s", sendEdits: true });
+		for (const nothing of [null, undefined, "x", [], { queryUrl: 1, secretName: {}, space: [], sendEdits: "yes" }]) expect(parseConnection(nothing)).toEqual({ queryUrl: "", secretName: "", space: "", sendEdits: false });
+	});
+
+	it("sends nothing unless a person turned sending on, as 0.1's connections never did", () => {
+		expect(parseConnection({ queryUrl: "https://q", secretName: "n", space: "s" }).sendEdits).toBe(false);
+	});
+});
+
+describe("what waits to be sent", () => {
+	it("is each path with when it changed, and nothing else", () => {
+		expect(parseOutbox({ "inbox/a.md": 5, "inbox/b.md": "5", "inbox/c.md": Number.NaN })).toEqual({ "inbox/a.md": 5 });
+		for (const nothing of [null, "x", [1]]) expect(parseOutbox(nothing)).toEqual({});
 	});
 });

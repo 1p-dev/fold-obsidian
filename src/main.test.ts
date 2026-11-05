@@ -37,12 +37,16 @@ vi.mock("obsidian", () => {
 		addCommand() {}
 		addSettingTab() {}
 		registerEvent() {}
+		register() {}
 		registerInterval(timer: number) {
 			return timer;
 		}
 	}
 	return {
 		Plugin,
+		TFile: class {
+			constructor(readonly path: string) {}
+		},
 		MarkdownView: class {},
 		Notice: class {
 			constructor(message: string) {
@@ -69,7 +73,8 @@ vi.mock("./vault-store", () => ({
 	},
 }));
 
-const { default: FoldMemoryPlugin, CONNECTION_KEY } = await import("./main");
+const { default: FoldMemoryPlugin, CONNECTION_KEY, OUTBOX_KEY, QUIET_MS } = await import("./main");
+const { TFile } = await import("obsidian");
 
 const QUERY = "https://query.fold.test";
 const TOKEN = "a-secret-token"; // secret-scan-ok: a stand-in the tests look for
@@ -79,14 +84,19 @@ interface Stubbed {
 	dataFile: unknown;
 }
 
-function setup(options: { dataFile?: unknown; connection?: unknown; files?: Record<string, string>; indexDelayMs?: number } = {}) {
+function setup(options: { dataFile?: unknown; connection?: unknown; files?: Record<string, string>; indexDelayMs?: number; webApp?: boolean } = {}) {
 	const api = createMockApi({ ...(options.indexDelayMs === undefined ? {} : { indexDelayMs: options.indexDelayMs }), spaces: [{ id: "garden", organization: { id: "o", name: "O" }, access: "admin", files: options.files ?? { "PURPOSE.md": "# G\n", "inbox/a.md": "a\n", "managed/b.md": "b\n" } }] });
 	const requests: { url: string; auth: string | undefined }[] = [];
 	let gate: Promise<void> | null = null;
 	const http: Http = async (request) => {
 		requests.push({ url: request.url, auth: request.headers.authorization });
+		// The query address doubles as Fold's web app when a test asks, naming itself for both parts.
+		if (request.url === `${QUERY}/config.json`) {
+			const config = options.webApp ? JSON.stringify({ queryUrl: QUERY, controlUrl: QUERY }) : '{"error":"not-found"}';
+			return { status: options.webApp ? 200 : 404, headers: {}, arrayBuffer: new TextEncoder().encode(config).buffer as ArrayBuffer };
+		}
 		if (gate && request.url.includes("/content/")) await gate;
-		const answer = await api.handle(new Request(request.url, { method: request.method, headers: request.headers }));
+		const answer = await api.handle(new Request(request.url, { method: request.method, headers: request.headers, ...(request.body === undefined ? {} : { body: request.body }) }));
 		return { status: answer.status, headers: Object.fromEntries(answer.headers), arrayBuffer: await answer.arrayBuffer() };
 	};
 	stub.http = http;
@@ -94,6 +104,7 @@ function setup(options: { dataFile?: unknown; connection?: unknown; files?: Reco
 	stub.store = store;
 	const local = new Map<string, unknown>(options.connection === undefined ? [] : [[CONNECTION_KEY, options.connection]]);
 	const secretsRead: string[] = [];
+	const folders = new Set<string>();
 	const app = {
 		loadLocalStorage: (key: string) => local.get(key) ?? null,
 		saveLocalStorage: (key: string, value: unknown) => local.set(key, value),
@@ -104,6 +115,13 @@ function setup(options: { dataFile?: unknown; connection?: unknown; files?: Reco
 			},
 		},
 		workspace: { on: () => ({}), onLayoutReady: () => {}, getActiveViewOfType: () => null },
+		vault: {
+			readBinary: async (file: { path: string }) => ((await store.read(file.path)) ?? new Uint8Array()).slice().buffer,
+			getAbstractFileByPath: (path: string) => (folders.has(path) ? { path } : null),
+			createFolder: async (path: string) => {
+				folders.add(path);
+			},
+		},
 	};
 	const plugin = new (FoldMemoryPlugin as unknown as new (app: unknown) => InstanceType<typeof FoldMemoryPlugin> & Stubbed)(app);
 	plugin.dataFile = options.dataFile ?? null;
@@ -114,6 +132,7 @@ function setup(options: { dataFile?: unknown; connection?: unknown; files?: Reco
 		requests,
 		secretsRead,
 		local,
+		folders,
 		holdReads: () => {
 			let open = () => {};
 			gate = new Promise((resolve) => {
@@ -124,7 +143,7 @@ function setup(options: { dataFile?: unknown; connection?: unknown; files?: Reco
 	};
 }
 
-const connection = { queryUrl: QUERY, secretName: "fold-token", space: "garden" };
+const connection = { queryUrl: QUERY, secretName: "fold-token", space: "garden", sendEdits: false };
 
 beforeEach(() => {
 	stub.notices.length = 0;
@@ -145,9 +164,12 @@ describe("where a token goes", () => {
 		const { plugin, requests } = setup({ dataFile: { queryUrl: "https://evil.example", secretName: "another-plugins-key", space: "someone-elses-private-space" }, connection });
 		await plugin.onload();
 		await plugin.syncNow(true);
-		expect(requests.length).toBeGreaterThan(0);
-		expect(requests.every((request) => request.url.startsWith(`${QUERY}/v1/spaces/garden`))).toBe(true);
-		expect(requests.every((request) => request.auth === `Bearer ${TOKEN}`)).toBe(true);
+		// The address is asked once whether it is Fold's web app, with no token, and every call to Fold's API goes to it, with the token.
+		const calls = requests.filter((request) => !request.url.endsWith("/config.json"));
+		expect(requests.filter((request) => request.url.endsWith("/config.json"))).toEqual([{ url: `${QUERY}/config.json`, auth: undefined }]);
+		expect(calls.length).toBeGreaterThan(0);
+		expect(calls.every((request) => request.url.startsWith(`${QUERY}/v1/spaces/garden`))).toBe(true);
+		expect(calls.every((request) => request.auth === `Bearer ${TOKEN}`)).toBe(true);
 	});
 
 	it("leaves no trace in what is saved in the vault: not the token, its name, nor the address", async () => {
@@ -183,7 +205,7 @@ describe("a round a person overtakes", () => {
 		const round = plugin.syncNow(true);
 		await vi.waitFor(() => expect(plugin.settings.sync).toBeDefined());
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		plugin.settings.sync = { space: null, revision: null, files: {}, opened: {} };
+		plugin.settings.sync = { space: null, revision: null, files: {}, opened: {}, refused: {} };
 		plugin.connection.space = "";
 		open();
 		await round;
@@ -266,5 +288,78 @@ describe("what goes wrong", () => {
 		await plugin.onload();
 		await plugin.syncNow(true);
 		expect(stub.notices).toEqual(["Fold: this space has no notes to copy."]);
+	});
+});
+
+describe("what a person changes, with sending on", () => {
+	const sending = { ...connection, sendEdits: true };
+	/** What Obsidian reports when a file changes, as the plugin hears it. */
+	const changed = (plugin: unknown, path: string) => (plugin as { changedHere(file: unknown): Promise<void> }).changedHere(new (TFile as unknown as new (path: string) => unknown)(path));
+
+	it("is kept on this device until it is sent, and the plugin's own copies are not taken for changes", async () => {
+		const { plugin, store, api, local } = setup({ connection: sending, webApp: true });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		await changed(plugin, "managed/b.md");
+		expect(plugin.outbox).toEqual({});
+		store.put("inbox/a.md", "a, edited\n");
+		await changed(plugin, "inbox/a.md");
+		expect(Object.keys(local.get(OUTBOX_KEY) as object)).toEqual(["inbox/a.md"]);
+		stub.notices.length = 0;
+		await plugin.syncNow(true);
+		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a, edited\n");
+		expect(stub.notices).toEqual(["Fold: your edits to inbox/a.md sent."]);
+		expect(plugin.outbox).toEqual({});
+		expect(local.get(OUTBOX_KEY)).toEqual({});
+		for (const saved of plugin.saved) expect(saved).not.toContain("outbox");
+	});
+
+	it("goes on a timer only once the note has been quiet for a while", async () => {
+		const { plugin, store, api } = setup({ connection: sending, webApp: true });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		store.put("inbox/a.md", "a, being written\n");
+		await changed(plugin, "inbox/a.md");
+		await plugin.syncNow(false);
+		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a\n");
+		plugin.outbox["inbox/a.md"] = Date.now() - 2 * QUIET_MS;
+		await plugin.syncNow(false);
+		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a, being written\n");
+	});
+
+	it("is not kept at all with sending off", async () => {
+		const { plugin, store } = setup({ connection });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		store.put("inbox/a.md", "a, edited\n");
+		await changed(plugin, "inbox/a.md");
+		expect(plugin.outbox).toEqual({});
+	});
+
+	it("is not sent through an address that names only Fold's query part, and the person is told how to send", async () => {
+		const { plugin, store, api, requests } = setup({ connection: sending });
+		await plugin.onload();
+		await plugin.syncNow(true);
+		store.put("inbox/a.md", "a, edited\n");
+		await changed(plugin, "inbox/a.md");
+		stub.notices.length = 0;
+		await plugin.syncNow(true);
+		expect(api.headFiles("garden")?.["inbox/a.md"]).toBe("a\n");
+		expect(requests.every((request) => !request.url.includes("/files/inbox/a.md"))).toBe(true);
+		expect(stub.notices[0]).toContain("web app");
+		expect(plugin.outbox["inbox/a.md"]).toBeDefined();
+	});
+
+	it("is forgotten when sending is turned on, so nothing from before is sent, and when the vault is disconnected", async () => {
+		const { plugin, folders } = setup({ connection: sending, webApp: true });
+		await plugin.onload();
+		plugin.outbox = { "inbox/old.md": 1 };
+		plugin.setSending(true);
+		expect(plugin.outbox).toEqual({});
+		// And the vault has an inbox to write a new note in.
+		await vi.waitFor(() => expect(folders.has("inbox")).toBe(true));
+		plugin.outbox = { "inbox/a.md": 1 };
+		plugin.clearOutbox();
+		expect(plugin.outbox).toEqual({});
 	});
 });

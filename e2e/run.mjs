@@ -75,6 +75,8 @@ const api = createMockApi({
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", join(work, "key.pem"), "-out", join(work, "cert.pem"), "-days", "1", "-subj", "/CN=localhost"], { stdio: "ignore" });
 const requests = [];
+/** Asks for Fold's web app settings, which the mock server answers as the web app would. */
+const configRequests = [];
 const tls = { key: readFileSync(join(work, "key.pem")), cert: readFileSync(join(work, "cert.pem")) };
 // Stands for a host a token must never reach, whether named by planted settings or a redirect.
 const evilRequests = [];
@@ -91,8 +93,18 @@ const server = createServer(tls, async (req, res) => {
 		res.end();
 		return;
 	}
-	requests.push({ method: req.method, path: decodeURIComponent(new URL(url).pathname), auth: req.headers.authorization });
-	const answer = await api.handle(new Request(url, { method: req.method, headers: { authorization: req.headers.authorization ?? "" } }));
+	// The web app's settings, which name this server as both of Fold's parts.
+	if (req.url === "/config.json") {
+		configRequests.push({ auth: req.headers.authorization });
+		res.writeHead(200, { "content-type": "application/json" });
+		res.end(JSON.stringify({ queryUrl: `https://localhost:${PORT}`, controlUrl: `https://localhost:${PORT}`, mcpUrl: `https://localhost:${PORT}/mcp`, issuer: "https://issuer.test", clientId: "fold-web" }));
+		return;
+	}
+	const chunks = [];
+	for await (const chunk of req) chunks.push(chunk);
+	const body = chunks.length > 0 ? Buffer.concat(chunks).toString("utf8") : undefined;
+	requests.push({ method: req.method, path: decodeURIComponent(new URL(url).pathname), auth: req.headers.authorization, ...(body === undefined ? {} : { body }) });
+	const answer = await api.handle(new Request(url, { method: req.method, headers: { authorization: req.headers.authorization ?? "", ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body }) }));
 	res.writeHead(answer.status, Object.fromEntries(answer.headers));
 	res.end(Buffer.from(await answer.arrayBuffer()));
 });
@@ -184,7 +196,7 @@ try {
 	check("the plugin loads in real Obsidian", true);
 	await run(`app.plugins.plugins["fold-memory"].syncNow(true)`);
 	await sleep(1500);
-	check("a vault's planted settings send the token nowhere: no address on this device, no call", evilRequests.length === 0 && requests.length === 0, `${evilRequests.length} to the planted host, ${requests.length} to Fold`);
+	check("a vault's planted settings send the token nowhere: no address on this device, no call", evilRequests.length === 0 && requests.length === 0 && configRequests.length === 0, `${evilRequests.length} to the planted host, ${requests.length} to Fold`);
 	await run(`(() => { const plugin = app.plugins.plugins["fold-memory"]; plugin.connection.queryUrl = "https://localhost:${PORT}"; plugin.connection.secretName = "fold-token"; plugin.connection.space = "garden"; plugin.saveConnection(); })()`);
 	check("the address is kept on this device", (await run(`app.loadLocalStorage("fold-memory-connection")?.queryUrl`)) === `https://localhost:${PORT}`);
 	await sleep(500);
@@ -266,9 +278,9 @@ try {
 	await run(`app.setting.openTabById("fold-memory")`);
 	await sleep(1500);
 	const settings = await run(`app.setting.pluginTabs.find((t) => t.id === "fold-memory")?.containerEl?.innerText ?? ""`);
-	check("the settings tab renders, with the token's secret picker", /Fold query address/.test(settings) && /Token/.test(settings) && /Check for changes/.test(settings), settings.replaceAll("\n", " / ").slice(0, 420));
+	check("the settings tab renders, with the token's secret picker", /Fold address/.test(settings) && /Token/.test(settings) && /Send edits to Fold/.test(settings) && /Check for changes/.test(settings), settings.replaceAll("\n", " / ").slice(0, 420));
 	const tab = `app.setting.pluginTabs.find((t) => t.id === "fold-memory")`;
-	check("it is drawn from its declarative definitions, so Obsidian's settings search finds them", await run(`${tab}.settingItems.map((d) => d.name).join() === "Fold query address,Token,Space,Check for changes"`), await run(`${tab}.settingItems.map((d) => d.name).join()`));
+	check("it is drawn from its declarative definitions, so Obsidian's settings search finds them", await run(`${tab}.settingItems.map((d) => d.name).join() === "Fold address,Token,Space,Send edits to Fold,Check for changes"`), await run(`${tab}.settingItems.map((d) => d.name).join()`));
 	check("a vault holding notes offers Disconnect, not another space", /Holding the notes of garden/.test(settings) && (await run(`[...${tab}.containerEl.querySelectorAll("button")].some((b) => b.innerText === "Disconnect")`)));
 	check("the controls read this device's address and token name", (await run(`${tab}.getControlValue("queryUrl")`)) === `https://localhost:${PORT}` && (await run(`${tab}.getControlValue("secretName")`)) === "fold-token");
 	await run(`${tab}.setControlValue("intervalMinutes", "15")`);
@@ -302,6 +314,58 @@ try {
 	const landed = evilRequests.slice(redirectBefore);
 	// Known and recorded in the README: requestUrl follows a redirect and carries the header, with no way to stop it. This line says if that ever changes.
 	console.log(landed.length === 0 ? "note redirect: not followed" : `note redirect: followed, bearer ${landed[0].auth ? "carried, as the README says" : "dropped, so the README can be relaxed"}`);
+	// Sending, turned on in the settings tab: what a person changes from then on goes to Fold, and nothing else does.
+	const plugin = `app.plugins.plugins["fold-memory"]`;
+	const noticesNow = () => run(`[...new Set([document, activeWindow.document])].flatMap((d) => [...d.querySelectorAll(".notice")]).map((n) => n.textContent).join(" | ")`);
+	const clearNotices = () => run(`[...new Set([document, activeWindow.document])].forEach((d) => d.querySelectorAll(".notice").forEach((n) => n.remove()))`);
+	await run(`${tab}.setControlValue("sendEdits", true)`);
+	check("sending is turned on for this device only, with nothing from before waiting", (await run(`${plugin}.connection.sendEdits`)) === true && JSON.parse(readFileSync(join(pluginDir, "data.json"), "utf8")).sendEdits === undefined && (await run(`Object.keys(${plugin}.outbox).length`)) === 0);
+	check("Fold's addresses came from its web app's settings, asked for without the token", configRequests.length > 0 && configRequests.every((r) => !r.auth), `${configRequests.length} asks`);
+	await run(`app.workspace.openLinkText("managed/deep/soil.md", "", true)`);
+	await sleep(1500);
+	check("with sending on, a copied note opens for editing", (await run(`app.workspace.activeLeaf?.view?.getMode?.()`)) === "source", await run(`app.workspace.activeLeaf?.view?.getMode?.()`));
+
+	const sendingFrom = requests.length;
+	await run(`app.vault.modify(app.vault.getAbstractFileByPath("inbox/non breaking.md"), "# Edited in Obsidian\\n")`);
+	await run(`app.vault.create("inbox/from obsidian.md", "# Written in Obsidian\\n")`);
+	await until("the two changes to be noted", () => run(`Object.keys(${plugin}.outbox).sort().join() === "inbox/from obsidian.md,inbox/non breaking.md"`), 10_000);
+	await clearNotices();
+	await syncNow();
+	let heads = api.headFiles("garden");
+	check("an edit to a copied note reached Fold, at the path Fold spells with a non-breaking space", heads["inbox/non\u00a0breaking.md"] === "# Edited in Obsidian\n", JSON.stringify(heads["inbox/non\u00a0breaking.md"]));
+	check("a new note in the inbox reached Fold at its own path", heads["inbox/from obsidian.md"] === "# Written in Obsidian\n");
+	const sentWrites = requests.slice(sendingFrom).filter((r) => r.method !== "GET");
+	check("each was a write of its text against the list's revision, with the token, and nothing else was written", sentWrites.length === 2 && sentWrites.every((r) => r.method === "PUT" && r.auth === `Bearer ${TOKEN}` && typeof JSON.parse(r.body).ifRevision === "string"), sentWrites.map((r) => `${r.method} ${r.path}`).join(" "));
+	check("and it says so", /sent/.test(await noticesNow()) && /saved to the space's inbox/.test(await noticesNow()), await noticesNow());
+	check("and nothing is left waiting", (await run(`Object.keys(${plugin}.outbox).length`)) === 0);
+
+	await run(`app.vault.modify(app.vault.getAbstractFileByPath("managed/roses.md"), "# Roses, corrected in Obsidian\\n")`);
+	await until("the change to be noted", () => run(`${plugin}.outbox["managed/roses.md"] !== undefined`), 10_000);
+	await clearNotices();
+	await syncNow();
+	if (api.headFiles("garden")["managed/roses.md"] === "# Roses, corrected in Obsidian\n") {
+		check("an edit to a managed note reached Fold", true);
+	} else {
+		// Until editors may change any file, Fold takes no edit to a managed note: the edit stays here, and Fold's reason is given.
+		check("an edit to a managed note Fold does not take yet stays here, with Fold's reason", readFileSync(join(vault, "managed/roses.md"), "utf8") === "# Roses, corrected in Obsidian\n" && /not sent: Fold refused it/.test(await noticesNow()), await noticesNow());
+	}
+
+	await change("PUT", "inbox/from obsidian.md", { text: "# Changed by an agent\n" });
+	await run(`app.vault.modify(app.vault.getAbstractFileByPath("inbox/from obsidian.md"), "# Changed in Obsidian too\\n")`);
+	await until("the change to be noted", () => run(`${plugin}.outbox["inbox/from obsidian.md"] !== undefined`), 10_000);
+	await syncNow();
+	check("an edit to a note that changed in Fold meanwhile is not sent, and stays beside Fold's version", api.headFiles("garden")["inbox/from obsidian.md"] === "# Changed by an agent\n" && readFileSync(join(vault, "inbox/from obsidian.md"), "utf8") === "# Changed by an agent\n" && readFileSync(join(vault, "inbox/from obsidian (local edit).md"), "utf8") === "# Changed in Obsidian too\n");
+
+	const movesFrom = requests.length;
+	await run(`app.fileManager.renameFile(app.vault.getAbstractFileByPath("managed/deep/soil.md"), "inbox/soil, renamed.md")`);
+	await run(`app.vault.delete(app.vault.getAbstractFileByPath("managed/café.md"))`);
+	await sleep(500);
+	await syncNow();
+	const moved = requests.slice(movesFrom).filter((r) => r.method !== "GET");
+	heads = api.headFiles("garden");
+	check("a rename or a delete here sends nothing, and Fold still holds both notes", moved.length === 0 && heads["managed/deep/soil.md"] !== undefined && heads["managed/cafe\u0301.md"] !== undefined, moved.map((r) => `${r.method} ${r.path}`).join(" "));
+	check("and the notes come back from Fold", existsSync(join(vault, "managed/deep/soil.md")) && existsSync(join(vault, "managed/café.md")));
+
 	check("nothing from this plugin reached the console as an error", !consoleProblems.some((p) => /fold|Fold|main\.js|plugin:fold-memory/.test(p)), consoleProblems.filter((p) => /fold|Fold|plugin:fold-memory/.test(p)).join(" | ").slice(0, 300));
 	// Disconnect last, since it ends the copy: the tab redraws itself with update(), offering the space list again, and the notes stay.
 	const kept = await vaultFiles();

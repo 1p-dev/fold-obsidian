@@ -40,8 +40,9 @@ describe("the plugin as Obsidian loads it", () => {
 		expect(code).not.toMatch(/console\.(log|info|debug|warn|error)/);
 	});
 
-	it("calls no write route, in any file that ships", () => {
-		for (const write of ["writeFile", "deleteFile", "saveNote", "createSpace"]) expect(shipped, write).not.toContain(write);
+	it("writes only a note's text, and calls no other write route, in any file that ships", () => {
+		expect(shipped).toContain("writeFile");
+		for (const write of ["deleteFile", "restoreFile", "saveNote", "createSpace", "setSettings", "setSleep", "reindex", "newUpload", "commitUpload"]) expect(shipped, write).not.toContain(`.${write}(`);
 	});
 
 	it("reads the token only from Obsidian's secret storage", () => {

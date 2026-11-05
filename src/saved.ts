@@ -9,10 +9,13 @@ export interface Saved {
 }
 
 export interface Connection {
+	/** Fold's address as the person entered it: its web app's, or, as 0.1 asked for, its query part's. */
 	queryUrl: string;
 	/** The name of the token in Obsidian's secret storage, never the token. */
 	secretName: string;
 	space: string;
+	/** Whether to send the person's edits and new inbox notes to Fold. Kept here, so a vault can never turn it on. */
+	sendEdits: boolean;
 }
 
 export const DEFAULT_INTERVAL_MINUTES = 5;
@@ -25,9 +28,12 @@ function parseSync(value: unknown): SyncState {
 	if (!isRecord(value) || !isRecord(value.files)) return NOTHING_YET;
 	const { space, revision, files } = value;
 	const opened = isRecord(value.opened) ? value.opened : {};
+	const refused = isRecord(value.refused) ? value.refused : {};
 	if ((space !== null && typeof space !== "string") || (revision !== null && typeof revision !== "string")) return NOTHING_YET;
 	if (![...Object.values(files), ...Object.values(opened)].every((hash) => typeof hash === "string")) return NOTHING_YET;
-	return { space, revision, files: files as Record<string, string>, opened: opened as Record<string, string> };
+	// What Fold refused only ever holds a note back, so one that cannot be read is simply forgotten.
+	const refusedHashes = Object.entries(refused).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+	return { space, revision, files: files as Record<string, string>, opened: opened as Record<string, string>, refused: Object.fromEntries(refusedHashes) };
 }
 
 export function parseSaved(data: unknown): Saved {
@@ -45,5 +51,12 @@ export function parseConnection(data: unknown): Connection {
 		queryUrl: typeof saved.queryUrl === "string" ? saved.queryUrl : "",
 		secretName: typeof saved.secretName === "string" ? saved.secretName : "",
 		space: typeof saved.space === "string" ? saved.space : "",
+		sendEdits: saved.sendEdits === true,
 	};
+}
+
+/** What a person changed in this vault while sending was on, by path, with when, kept on this device until it is sent. */
+export function parseOutbox(data: unknown): Record<string, number> {
+	if (!isRecord(data)) return {};
+	return Object.fromEntries(Object.entries(data).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])));
 }

@@ -55,6 +55,10 @@ export class FakeFold implements Source {
 	/** A hash for reading a path that does not match what it answers. */
 	wrongHash = new Set<string>();
 	readonly reads: string[] = [];
+	/** What was sent, in order, with the revision each was sent against. */
+	readonly writes: { path: string; text: string; ifRevision?: string }[] = [];
+	/** A refusal for sending a path. */
+	writeRefusals = new Map<string, ApiError>();
 	statusCalls = 0;
 	listCalls = 0;
 
@@ -82,6 +86,15 @@ export class FakeFold implements Source {
 			})),
 		);
 		return { revision: this.served, files, deleted: [] };
+	};
+
+	/** Takes what is sent, as Fold would once it is indexed, so the next list holds it. */
+	writeFile: Source["writeFile"] = async (_space, path, body) => {
+		this.writes.push({ path, text: body.text, ...(body.ifRevision === undefined ? {} : { ifRevision: body.ifRevision }) });
+		const refusal = this.writeRefusals.get(path);
+		if (refusal) throw refusal;
+		this.notes[path] = body.text;
+		return { revision: this.served ?? "1" };
 	};
 
 	content: Source["content"] = async (_space, path) => {

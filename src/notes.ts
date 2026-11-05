@@ -69,6 +69,11 @@ export function asOpened(bytes: Uint8Array): Uint8Array {
 }
 
 /** Where a person's edit of a note goes when Fold's version replaces it. */
+/** Whether a file is where the plugin kept a person's edit, which stays theirs and is never sent. */
+export function isEditCopy(path: string): boolean {
+	return / \(local edit(?: \d+)?\)\.[^./]+$/.test(path);
+}
+
 export function editCopyPath(path: string, attempt: number): string {
 	const dot = path.lastIndexOf(".");
 	return `${path.slice(0, dot)} (local edit${attempt > 1 ? ` ${attempt}` : ""})${path.slice(dot)}`;

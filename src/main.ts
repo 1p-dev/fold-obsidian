@@ -1,7 +1,9 @@
 /** The plugin: settings, a timer and a command around one sync, and notes shown as read-only. */
-import { MarkdownView, normalizePath, Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
-import { foldClient, queryAddress } from "./fold";
-import { type Connection, DEFAULT_INTERVAL_MINUTES, parseConnection, parseSaved, type Saved } from "./saved";
+import { MarkdownView, normalizePath, Notice, Plugin, requestUrl, type TAbstractFile, TFile, type WorkspaceLeaf } from "obsidian";
+import { type Addresses, foldClient, queryAddress, resolveAddresses } from "./fold";
+import { sha256 } from "./hash";
+import { isNote, localForm } from "./notes";
+import { type Connection, DEFAULT_INTERVAL_MINUTES, parseConnection, parseOutbox, parseSaved, type Saved } from "./saved";
 import { FoldSettingTab } from "./settings";
 import { NOTHING_YET, syncSpace } from "./sync";
 import { VaultStore } from "./vault-store";
@@ -9,12 +11,21 @@ import { describeHeld, describeRefusal, describeRound, saidBy } from "./words";
 
 /** The key of the address and the secret's name in Obsidian's per-vault local storage. */
 export const CONNECTION_KEY = "fold-memory-connection";
+/** The key of what a person changed here while sending was on, in the same storage, so a vault never decides what is sent. */
+export const OUTBOX_KEY = "fold-memory-outbox";
+/** A change goes once a note has been left this long, so a note being written is sent once it is finished, not at every save. */
+export const QUIET_MS = 60_000;
 
 const NO_NOTES = "Fold: this space has no notes to copy.";
 
 export default class FoldMemoryPlugin extends Plugin {
 	override settings: Saved = { intervalMinutes: DEFAULT_INTERVAL_MINUTES, sync: NOTHING_YET };
-	connection: Connection = { queryUrl: "", secretName: "", space: "" };
+	connection: Connection = { queryUrl: "", secretName: "", space: "", sendEdits: false };
+	/** What a person changed here while sending was on, by the vault's path, with when. */
+	outbox: Record<string, number> = {};
+	private found: { text: string; addresses: Addresses } | null = null;
+	private soon: number | null = null;
+	private saidNoControl = false;
 	private tab: FoldSettingTab | null = null;
 	private statusBar: HTMLElement | null = null;
 	private timer: number | null = null;
@@ -26,6 +37,7 @@ export default class FoldMemoryPlugin extends Plugin {
 	override async onload(): Promise<void> {
 		this.settings = parseSaved(await this.loadData());
 		this.connection = parseConnection(this.app.loadLocalStorage(CONNECTION_KEY));
+		this.outbox = parseOutbox(this.app.loadLocalStorage(OUTBOX_KEY));
 		this.statusBar = this.addStatusBarItem();
 		this.addRibbonIcon("refresh-cw", "Fold: sync notes now", () => void this.syncNow(true));
 		this.addCommand({ id: "sync-now", name: "Sync notes now", callback: () => void this.syncNow(true) });
@@ -33,8 +45,24 @@ export default class FoldMemoryPlugin extends Plugin {
 		this.addSettingTab(this.tab);
 		this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => this.showAsRead(leaf)));
 		this.registerEvent(this.app.workspace.on("file-open", () => this.showAsRead(this.app.workspace.getActiveViewOfType(MarkdownView)?.leaf ?? null)));
+		this.register(() => {
+			if (this.soon !== null) window.clearTimeout(this.soon);
+		});
 		this.app.workspace.onLayoutReady(() => {
+			// Only once the vault has loaded, since Obsidian reports every file as created while it loads.
+			this.registerEvent(this.app.vault.on("modify", (file) => void this.changedHere(file)));
+			this.registerEvent(this.app.vault.on("create", (file) => void this.changedHere(file)));
+			this.registerEvent(
+				this.app.vault.on("rename", (file, oldPath) => {
+					if (this.outbox[oldPath] !== undefined) {
+						delete this.outbox[oldPath];
+						this.saveOutbox();
+					}
+					void this.changedHere(file);
+				}),
+			);
 			this.schedule();
+			void this.ensureInbox();
 			void this.syncNow(false);
 		});
 	}
@@ -51,13 +79,65 @@ export default class FoldMemoryPlugin extends Plugin {
 		this.app.saveLocalStorage(CONNECTION_KEY, this.connection);
 	}
 
+	saveOutbox(): void {
+		this.app.saveLocalStorage(OUTBOX_KEY, this.outbox);
+	}
+
+	/** What is changed from now on is offered, so nothing a person did before, nor anything a vault came with, is ever sent. */
+	setSending(on: boolean): void {
+		this.connection.sendEdits = on;
+		this.saveConnection();
+		this.clearOutbox();
+		void this.ensureInbox();
+	}
+
+	/** A new note goes in inbox/, so with sending on the vault has one to write in, even when the space's inbox is empty. */
+	private async ensureInbox(): Promise<void> {
+		if (!this.connection.sendEdits || this.app.vault.getAbstractFileByPath("inbox") !== null) return;
+		try {
+			await this.app.vault.createFolder("inbox");
+		} catch {
+			// Made meanwhile, or a file of that name is in the way, which is a person's own.
+		}
+	}
+
+	/** Changes waiting to be sent are for the space they were made in, so Disconnect, or another space, forgets them. */
+	clearOutbox(): void {
+		this.outbox = {};
+		this.saveOutbox();
+	}
+
+	/** Fold's addresses, read from its web app once a session for each address entered. */
+	async addresses(text: string): Promise<Addresses | null> {
+		if (this.found?.text === text) return this.found.addresses;
+		const addresses = await resolveAddresses(text, requestUrl);
+		if (addresses) this.found = { text, addresses };
+		return addresses;
+	}
+
+	/** A note a person changed. The plugin's own copies raise the same events, so a file still holding what Fold gave is not a change. */
+	private async changedHere(file: TAbstractFile): Promise<void> {
+		if (!this.connection.sendEdits || !(file instanceof TFile) || !isNote(file.path)) return;
+		const { files } = this.settings.sync;
+		const held = Object.keys(files).find((path) => localForm(path) === file.path);
+		if (held !== undefined && (await sha256(new Uint8Array(await this.app.vault.readBinary(file)))) === files[held]) return;
+		this.outbox[file.path] = Date.now();
+		this.saveOutbox();
+		if (this.soon !== null) window.clearTimeout(this.soon);
+		this.soon = window.setTimeout(() => {
+			this.soon = null;
+			void this.syncNow(false);
+		}, QUIET_MS + 5_000);
+	}
+
 	schedule(): void {
 		if (this.timer !== null) window.clearInterval(this.timer);
 		this.timer = this.registerInterval(window.setInterval(() => void this.syncNow(false), this.settings.intervalMinutes * 60_000));
 	}
 
-	/** A note here is a copy, so it opens for reading: an edit would not reach Fold. */
+	/** A note here is a copy, so it opens for reading unless a person's edits are sent: otherwise an edit would not reach Fold. */
 	private showAsRead(leaf: WorkspaceLeaf | null): void {
+		if (this.connection.sendEdits) return;
 		const view = leaf?.view;
 		if (!(view instanceof MarkdownView) || !view.file || view.getMode() !== "source") return;
 		const path = view.file.path;
@@ -71,10 +151,9 @@ export default class FoldMemoryPlugin extends Plugin {
 			if (asked) new Notice("Fold is already syncing.");
 			return;
 		}
-		const { queryUrl, secretName, space } = this.connection;
-		const base = queryAddress(queryUrl);
-		if (!base || !secretName || !space) {
-			if (asked) new Notice("Fold: set the query address, the token and a space in this plugin's settings.");
+		const { queryUrl, secretName, space, sendEdits } = this.connection;
+		if (!queryAddress(queryUrl) || !secretName || !space) {
+			if (asked) new Notice("Fold: set the address, the token and a space in this plugin's settings.");
 			return;
 		}
 		this.running = true;
@@ -83,10 +162,19 @@ export default class FoldMemoryPlugin extends Plugin {
 		const stillOurs = () => this.settings.sync === mine && this.connection.space === space;
 		const heldBefore = Object.keys(mine.files).length;
 		try {
-			const client = foldClient(base, () => this.app.secretStorage.getSecret(secretName), requestUrl);
+			const addresses = await this.addresses(queryUrl);
+			if (!addresses) return;
+			const client = foldClient(addresses, () => this.app.secretStorage.getSecret(secretName), requestUrl);
+			if (sendEdits && !addresses.control && (asked || !this.saidNoControl)) {
+				new Notice("Fold: to send your edits, enter the web app's address in this plugin's settings. Until then, notes are only copied.");
+				this.saidNoControl = true;
+			}
+			const changed = { ...this.outbox };
+			const outgoing = sendEdits && addresses.control ? { changed, quietSince: asked ? Date.now() : Date.now() - QUIET_MS } : undefined;
 			const { state, report } = await syncSpace(client, new VaultStore(this.app), mine, {
 				space,
 				force: asked,
+				...(outgoing ? { outgoing } : {}),
 				stopped: () => this.stopping || !stillOurs(),
 				progress: (done, total) => this.statusBar?.setText(`Fold: ${done} of ${total}`),
 				checkpoint: async (partial) => {
@@ -98,6 +186,11 @@ export default class FoldMemoryPlugin extends Plugin {
 			if (!stillOurs()) {
 				this.statusBar?.setText("Fold");
 				return;
+			}
+			// A path changed again during the round is offered again.
+			if (report.done.length > 0) {
+				for (const path of report.done) if (this.outbox[path] === changed[path]) delete this.outbox[path];
+				this.saveOutbox();
 			}
 			this.settings.sync = mine = state;
 			await this.saveSettings();
@@ -124,6 +217,8 @@ export default class FoldMemoryPlugin extends Plugin {
 
 	/** A timer's round says a problem once, not every few minutes. */
 	private sayProblem(problem: unknown, asked: boolean): void {
+		// Fold's addresses are read again, in case its web app now names others.
+		this.found = null;
 		const words = describeRefusal(problem);
 		this.statusBar?.setText("Fold: not synced");
 		if (asked || words !== this.lastProblem) new Notice(`Fold: ${words}`);
